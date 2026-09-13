@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+*.pem
+*.key
+*.crt
+.env
+
+# Generated on first run; instance-specific (public IP, port range).
+/confluencevoice.toml
+/tls/

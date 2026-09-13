@@ -1,0 +1,54 @@
+[package]
+name = "confluencevoice"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Spatial WebRTC voice service for OpenSimulator (Windows-native), speaking Linden Lab's voice protocol"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["opensimulator", "webrtc", "voice", "opensim", "spatial-audio"]
+categories = ["multimedia::audio", "network-programming"]
+
+[[bin]]
+name = "confluencevoice"
+path = "src/main.rs"
+
+[dependencies]
+# webrtc 0.20.x is a REWRITE over the sans-I/O `rtc` core; the pre-0.20 APIBuilder
+# API does not exist here. 0.21 is a beta, so 0.20.3 is the latest stable.
+webrtc = "0.20.3"
+rtc = "0.20.3"
+
+# libopus bindings. The crate compiles libopus from source via cmake, so cmake is a
+# build requirement on every platform. We decode every speaker and re-encode a
+# distinct mix per listener, so both halves are needed.
+opus = "0.3"
+
+tokio = { version = "1.35", features = ["full"] }
+hyper = { version = "0.14", features = ["http1", "server", "runtime", "stream"] }
+tokio-rustls = "0.24"
+rustls = "0.21"
+rustls-pemfile = "1.0"
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+bytes = "1.5"
+uuid = { version = "1", features = ["v4", "serde"] }
+parking_lot = "0.12"
+async-trait = "0.1"
+futures = "0.3"
+log = "0.4"
+env_logger = "0.11"
+
+# Only for examples/ — the end-to-end and load harnesses. Not linked into the service.
+[dev-dependencies]
+anyhow = "1"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# No panic=abort deliberately: a panic in one voice session must not take down every
+# other participant's audio.
