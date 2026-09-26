@@ -1,8 +1,22 @@
 # ConfluenceVoice
 
-Spatial WebRTC voice for [OpenSimulator](http://opensimulator.org) — a Windows-native
-build so Firestorm and browser-based viewers on a Windows-hosted grid can hear each
-other positionally, without Vivox.
+Spatial WebRTC voice for [OpenSimulator](http://opensimulator.org) — a **Windows-native**
+voice server so Firestorm and browser-based viewers can hear each other positionally,
+without Vivox, on **any OpenSim grid**.
+
+## Who this is for
+
+Vivox is going away, and the existing WebRTC voice backend for OpenSim
+([wolfvoice](https://github.com/intelligentwolf/wolfvoice)) is built for Linux, with
+Docker or WSL as the route for everyone else. ConfluenceVoice gives Windows grid
+operators another option: a single `confluencevoice.exe` that runs directly on Windows,
+configured by one `.toml` file, with no Linux VM, container or WSL layer to install and
+maintain.
+
+It is not tied to any particular grid or OpenSim distribution. It works with any
+OpenSimulator that has the `os-webrtc-janus` addon (upstream OpenSim and OpenSim-NGC
+include it; older trees can add it). The name comes from the Confluence grid where it
+was developed and first tested.
 
 ConfluenceVoice is an independent project, derived from
 [wolfvoice](https://github.com/intelligentwolf/wolfvoice) by Wolf Software Systems
