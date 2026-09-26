@@ -163,6 +163,22 @@ the peer connection connects, the data channel opens, and the speaking indicator
 shows. **Not yet tested with two or more real participants** (hearing each other,
 spatial panning). Details, problems found and fixes: [docs/TESTING.md](docs/TESTING.md).
 
+## Roadmap
+
+Next, in order:
+
+1. **Multi-person testing.** Two or more real participants for spatial voice (hearing
+   each other, panning, distance, other people's speaking dots), then group voice and
+   person-to-person calls. Progress is tracked in the checklist in
+   [docs/TESTING.md](docs/TESTING.md); a release should only claim what is ticked there.
+2. **Authentication on the voice port.** TCP 9443 currently has no authentication of its
+   own and relies on a firewall. Planned: a shared secret between the region and
+   ConfluenceVoice, and an allow-list of region IP addresses in `confluencevoice.toml`.
+3. **TURN relay support.** Viewers on networks that block outbound UDP get no voice
+   today. Vivox handled that case, so a replacement should too.
+
+On hold: a Windows Service wrapper (start automatically, no console window).
+
 ## Testing it without a viewer
 
 ```powershell
