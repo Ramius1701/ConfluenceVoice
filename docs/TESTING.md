@@ -17,6 +17,53 @@ console app on the same machine.
 | Windows firewall rules (TCP 9443, UDP 40000-40999) | not needed on the same machine; not tested remotely |
 | Running as a Windows Service | not implemented |
 
+## Vivox replacement checklist
+
+ConfluenceVoice is meant to replace Vivox, so a release should only claim what is ticked
+here. Tick an item only after it has been seen working with real viewers, and note the
+date and viewer version beside it.
+
+### Connection
+- [x] Region provisions a viewer and the peer connection connects (2026-09-27, Firestorm 7.2.5)
+- [x] `SLData` data channel opens (2026-09-27, Firestorm 7.2.5)
+- [ ] Reconnects after a viewer relog, and after the region restarts
+- [ ] Session is removed when the viewer logs out (check `sessions` on `https://host:9443/`)
+- [ ] Voice connects from a viewer **outside** your network (needs `public_ip` and UDP 40000-40999 forwarded)
+- [ ] Voice works from a viewer on a network that blocks outbound UDP (expected to fail: no TURN)
+
+### Nearby (spatial) voice — needs two or more real participants
+- [x] Own speaking indicator shows (2026-09-27, one participant)
+- [ ] Each person hears the other
+- [ ] Other people's speaking dots appear above their avatars
+- [ ] Panning: a speaker to your left is louder in the left ear, and it follows you turning
+- [ ] Distance: full volume within 10 m, fading out, silent beyond 60 m
+- [ ] Per-person volume slider and per-person mute affect only that listener
+- [ ] Crossing into a neighbouring region keeps voice, without a gap or a duplicate participant
+- [ ] Teleporting within the region and to another region reconnects cleanly
+- [ ] Two parcels with different voice settings: parcel channel and estate channel behave as set
+- [ ] Voice disabled on a parcel or estate silences it, and re-enabling restores it
+
+### Group and person-to-person voice — implemented, never run live
+- [ ] Group voice call: all members hear each other, not positional
+- [ ] Person-to-person voice call: both sides connect and hear each other
+- [ ] Ordinary text IMs are not turned into voice calls (needs the `ChatSessionRequest` fix in `os-webrtc-janus`, see `docs/OPENSIM.md`)
+- [ ] Leaving a call removes the person from everyone else's list
+
+### Moderation
+- [ ] Estate or group moderator can mute another person — **not implemented** (`moderator_muted` is always `false`)
+
+### Viewers
+- [x] Firestorm 7.2.5 (Windows)
+- [ ] Other Firestorm versions, including one older than 7.2.4
+- [ ] Second Life viewer
+- [ ] Browser viewer using `client/voice_llwebrtc.js`
+
+### Operations
+- [ ] Runs unattended for 24 hours with no `mixer overloaded` warnings
+- [ ] `cargo run --release --example load_test` at the expected number of listeners, CPU noted
+- [ ] Survives a Windows reboot and starts on its own — **needs the Windows Service wrapper**
+- [ ] Certificate renewal procedure documented and tried
+
 ## Problems found, and what fixed them
 
 ### Mic button greyed out in Firestorm 7.2.4+
