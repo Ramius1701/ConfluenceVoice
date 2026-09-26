@@ -212,6 +212,25 @@ Same as upstream:
 - **Group and IM voice** (`channel_type: multiagent`) is implemented and rooms are
   keyed correctly, but has had far less exercise than spatial voice.
 
+## Alternatives
+
+Other ways to get voice on an OpenSim grid now that the built-in Vivox connector no
+longer works for most operators. Facts below are as of September 2026; check each
+project's own pages before relying on them.
+
+- **[wolfvoice](https://github.com/intelligentwolf/wolfvoice)** — the project
+  ConfluenceVoice is derived from. Same WebRTC design, self-hosted and free. Built for
+  Linux (a Linux host with systemd); on Windows it means Docker or WSL. Choose it if
+  your voice server is Linux.
+- **[ThinkVox](https://thinkvox.cloud/)** — a hosted, paid service (a free tier and
+  tiers priced by concurrent users) with a web dashboard and an API key. Its onboarding
+  currently offers a Linux x64 download only, for an SLVoice replacement you copy into
+  each Firestorm install, alongside WebRTC support for Firestorm 7.1.10+. Choose it if
+  you would rather not run a voice server yourself.
+- **ConfluenceVoice** — self-hosted and free, a single `.exe` on Windows, with no
+  per-user pricing and no third-party service in the voice path. Firestorm 7.1.10+
+  uses WebRTC natively, so viewers need no replacement files.
+
 ## Credits
 
 Built on **[wolfvoice](https://github.com/intelligentwolf/wolfvoice)** by Wolf
