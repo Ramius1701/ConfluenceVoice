@@ -6,9 +6,11 @@ without Vivox, on **any OpenSim grid**.
 
 ## Who this is for
 
-Vivox ended its free OpenSim voice service in 2024
-([OSGrid announcement](https://www.osgrid.online/news/vivox-voice/)), and the existing
-WebRTC voice backend for OpenSim
+Vivox has stopped taking new signups for its free OpenSim voice service and has
+announced its end ([OSGrid's notice](https://www.osgrid.online/news/vivox-voice/)).
+Grids that already have Vivox set up can still get voice from it today, but nobody
+outside Vivox knows for how long, so operators need a replacement they control before
+it stops. The existing WebRTC voice backend for OpenSim
 ([wolfvoice](https://github.com/intelligentwolf/wolfvoice)) is built for Linux, with
 Docker or WSL as the route for everyone else. ConfluenceVoice gives Windows grid
 operators another option: a single `confluencevoice.exe` that runs directly on Windows,
@@ -225,10 +227,11 @@ project's own pages before relying on them.
   Linux (a Linux host with systemd); on Windows it means Docker or WSL. Choose it if
   your voice server is Linux.
 - **[ThinkVox](https://thinkvox.cloud/)** — a hosted, paid service (a free tier and
-  tiers priced by concurrent users) with a web dashboard and an API key. Its onboarding
-  currently offers a Linux x64 download only, for an SLVoice replacement you copy into
-  each Firestorm install, alongside WebRTC support for Firestorm 7.1.10+. Choose it if
-  you would rather not run a voice server yourself.
+  tiers priced by concurrent users) with a web dashboard and an API key; its signup
+  works much like Vivox's did. Firestorm 7.1.10+ uses WebRTC with nothing to install.
+  For older Firestorm it asks users to swap in a replacement `SLVoice` binary, and the
+  download its onboarding offered was for Linux x64. Choose it if you would rather not
+  run a voice server yourself.
 - **ConfluenceVoice** — self-hosted and free, a single `.exe` on Windows, with no
   per-user pricing and no third-party service in the voice path. Firestorm 7.1.10+
   uses WebRTC natively, so viewers need no replacement files.

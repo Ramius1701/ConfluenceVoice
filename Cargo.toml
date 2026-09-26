@@ -1,6 +1,6 @@
 [package]
 name = "confluencevoice"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.75"
 description = "Spatial WebRTC voice service for OpenSimulator (Windows-native), speaking Linden Lab's voice protocol"
