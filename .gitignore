@@ -8,3 +8,9 @@
 # Generated on first run; instance-specific (public IP, port range).
 /confluencevoice.toml
 /tls/
+
+# Packaged builds for distribution, not source.
+/dist/
+
+# Local run logs.
+*.log

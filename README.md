@@ -102,6 +102,12 @@ and [docs/OPENSIM.md](docs/OPENSIM.md). Both **estate** and **parcel** voice fla
 must be enabled or nothing will happen and nothing will log — see
 [docs/OPENSIM.md](docs/OPENSIM.md#allow-voice) for details.
 
+**Firestorm 7.2.4+ needs one more thing:** the region must advertise
+`SimulatorFeatures["stun-servers"]`, or the viewer refuses to start voice and the mic
+stays greyed out. Set `StunServers` in the ini (see the template) and use an
+`os-webrtc-janus` build that sends the `stun-servers` key. See
+[docs/TESTING.md](docs/TESTING.md).
+
 ### 5. Check it
 
 ```powershell
@@ -128,6 +134,13 @@ for the full explanation.
 
 The built binary is at `target\release\confluencevoice.exe`. Copy it, together with
 your `confluencevoice.toml` and `tls\` folder, wherever you want to run it from.
+
+## Status
+
+Working end to end with one live viewer (Firestorm 7.2.5) through an OpenSim region:
+the peer connection connects, the data channel opens, and the speaking indicator
+shows. **Not yet tested with two or more real participants** (hearing each other,
+spatial panning). Details, problems found and fixes: [docs/TESTING.md](docs/TESTING.md).
 
 ## Testing it without a viewer
 
