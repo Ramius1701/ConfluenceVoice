@@ -6,7 +6,9 @@ without Vivox, on **any OpenSim grid**.
 
 ## Who this is for
 
-Vivox is going away, and the existing WebRTC voice backend for OpenSim
+Vivox ended its free OpenSim voice service in 2024
+([OSGrid announcement](https://www.osgrid.online/news/vivox-voice/)), and the existing
+WebRTC voice backend for OpenSim
 ([wolfvoice](https://github.com/intelligentwolf/wolfvoice)) is built for Linux, with
 Docker or WSL as the route for everyone else. ConfluenceVoice gives Windows grid
 operators another option: a single `confluencevoice.exe` that runs directly on Windows,
