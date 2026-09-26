@@ -177,6 +177,21 @@ Next, in order:
 3. **TURN relay support.** Viewers on networks that block outbound UDP get no voice
    today. Vivox handled that case, so a replacement should too.
 
+After that:
+
+4. **Easier setup for operators.** Get the `stun-servers` fix into upstream
+   `os-webrtc-janus` (Firestorm 7.2.4+ needs it), a Windows guide to getting a free
+   TLS certificate, a firewall setup script, automatic public-IP detection, and a
+   Vivox-to-WebRTC migration guide for grids that mix both.
+5. **Reliability.** Log to a file with rotation, a status page (sessions, CPU, skipped
+   mixer ticks), certificate reload without a restart, clearer config validation, and a
+   documented Task Scheduler or NSSM recipe for starting on boot.
+6. **Distribution and trust.** Automated Windows builds on GitHub, code signing so
+   SmartScreen does not warn, and a winget or Scoop package.
+7. **Moderator mute.** Estate and group moderators muting another person, a feature
+   Vivox had. The protocol field exists; the server currently always reports it as
+   `false`.
+
 On hold: a Windows Service wrapper (start automatically, no console window).
 
 ## Testing it without a viewer
