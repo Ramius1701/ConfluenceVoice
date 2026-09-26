@@ -196,8 +196,8 @@ service).
   [`src/config.rs`](src/config.rs)).
 - **No installer, no systemd unit**: this is meant to be run directly, the way any
   other Windows program is. A Windows Service wrapper (so it can start
-  automatically and run without a console window) is a reasonable next step, not
-  yet done.
+  automatically and run without a console window) is not implemented and is on hold
+  for now; run it from a console, or start it yourself with Task Scheduler.
 - Session IDs are prefixed `cv-` instead of `wv-`; the health endpoint reports
   `"service": "confluencevoice"`. Everything on the wire to Firestorm/OpenSim is
   unchanged — those prefixes are purely internal/log labels.

@@ -15,7 +15,7 @@ console app on the same machine.
 | Own speaking indicator (voice dot) shows | pass, with one participant |
 | Two or more real participants: hearing each other, panning, other people's dots | **not yet tested** |
 | Windows firewall rules (TCP 9443, UDP 40000-40999) | not needed on the same machine; not tested remotely |
-| Running as a Windows Service | not implemented |
+| Running as a Windows Service | not implemented (on hold) |
 
 ## Vivox replacement checklist
 
@@ -61,7 +61,7 @@ date and viewer version beside it.
 ### Operations
 - [ ] Runs unattended for 24 hours with no `mixer overloaded` warnings
 - [ ] `cargo run --release --example load_test` at the expected number of listeners, CPU noted
-- [ ] Survives a Windows reboot and starts on its own — **needs the Windows Service wrapper**
+- [ ] Survives a Windows reboot and starts on its own — **on hold**: needs the Windows Service wrapper, which is not being worked on for now
 - [ ] Certificate renewal procedure documented and tried
 
 ## Problems found, and what fixed them
