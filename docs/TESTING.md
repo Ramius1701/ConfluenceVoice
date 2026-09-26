@@ -39,7 +39,8 @@ date and viewer version beside it.
 - [ ] Distance: full volume within 10 m, fading out, silent beyond 60 m
 - [ ] Per-person volume slider and per-person mute affect only that listener
 - [ ] Crossing into a neighbouring region keeps voice, without a gap or a duplicate participant
-- [ ] Teleporting within the region and to another region reconnects cleanly
+- [x] Teleporting within the region keeps the same voice session (2026-09-27, Firestorm 7.2.5, one participant)
+- [ ] Teleporting to another region and back reconnects cleanly
 - [ ] Two parcels with different voice settings: parcel channel and estate channel behave as set
 - [ ] Voice disabled on a parcel or estate silences it, and re-enabling restores it
 
