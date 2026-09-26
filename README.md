@@ -4,16 +4,19 @@ Spatial WebRTC voice for [OpenSimulator](http://opensimulator.org) — a Windows
 build so Firestorm and browser-based viewers on a Windows-hosted grid can hear each
 other positionally, without Vivox.
 
-ConfluenceVoice is a Windows-packaged fork of
+ConfluenceVoice is an independent project, derived from
 [wolfvoice](https://github.com/intelligentwolf/wolfvoice) by Wolf Software Systems
-Ltd — see [NOTICE](NOTICE) for full attribution. The protocol handling, spatial
-mixer and session logic are unchanged; what's different is how it's configured and
-shipped: a plain `.toml` file next to the `.exe` instead of environment variables
-and `/etc` paths, so it runs like any other Windows program — download, edit one
-file, double-click.
+Ltd, which is used as a donor of code and ideas — this is not a GitHub fork and
+shares no git history with it. See [NOTICE](NOTICE) for full attribution. The
+protocol handling, spatial mixer and session logic are carried over unchanged; what's
+different is how it's configured and shipped: a plain `.toml` file next to the `.exe`
+instead of environment variables and `/etc` paths, so it runs like any other Windows
+program — download, edit one file, double-click.
 
 It is a **voice service backend for
-[os-webrtc-janus](https://github.com/wolfsoftwaresystemsltd/os-webrtc-janus)**. That
+[os-webrtc-janus](https://github.com/Misterblue/os-webrtc-janus)** (original by
+Robert Adams; Wolf Software Systems maintains a fork at
+[intelligentwolf/os-webrtc-janus](https://github.com/intelligentwolf/os-webrtc-janus)). That
 addon does the OpenSimulator half — capabilities, provider advertisement, session
 bookkeeping — and ConfluenceVoice is what you point it at instead of a Janus
 gateway.
@@ -128,9 +131,9 @@ cargo test              # unit tests, no network required
 The `CMAKE_POLICY_VERSION_MINIMUM` variable works around a version mismatch
 between the `opus` crate's vendored libopus (which declares an old
 `cmake_minimum_required`) and CMake 4+, which refuses that outright. This is
-CMake's own documented escape hatch, not a fragile hack — see
-[the upstream PR that found it](https://github.com/intelligentwolf/wolfvoice/pull/1)
-for the full explanation.
+CMake's own documented escape hatch, not a fragile hack. Without it the build stops
+with "Compatibility with CMake < 3.5 has been removed from CMake". Use a recent CMake
+(4.x) so it also recognises current Visual Studio versions.
 
 The built binary is at `target\release\confluencevoice.exe`. Copy it, together with
 your `confluencevoice.toml` and `tls\` folder, wherever you want to run it from.
