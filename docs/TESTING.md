@@ -13,8 +13,8 @@ console app on the same machine.
 | Region provisions a viewer through ConfluenceVoice | pass |
 | Firestorm peer connection reaches **connected**, `SLData` data channel **open** | pass |
 | Own speaking indicator (voice dot) shows | pass, with one participant |
-| Two or more real participants: hearing each other, panning, other people's dots | **not yet tested** |
-| Windows firewall rules (TCP 9443, UDP 40000-40999) | not needed on the same machine; not tested remotely |
+| Two or more real participants: hearing each other, panning, other people's dots, mute/volume | **not yet tested** — this is the one open item everything else is built on |
+| Remote/NAT'd viewers over the real internet | confirmed, ongoing: the two testers connect from New Zealand and Indiana, USA respectively, to `casperia.ddns.net:8002` — real cross-continent WAN traffic, not LAN. The router UDP port range had to be narrowed (40000-40999 to 40000-40049) to match what the router would actually forward; that fix came from this real remote traffic, not a lab test. |
 | Running as a Windows Service | not implemented (on hold) |
 
 ## Vivox replacement checklist
@@ -27,9 +27,9 @@ date and viewer version beside it.
 - [x] Region provisions a viewer and the peer connection connects (2026-09-27, Firestorm 7.2.5)
 - [x] `SLData` data channel opens (2026-09-27, Firestorm 7.2.5)
 - [ ] Reconnects after a viewer relog, and after the region restarts
-- [ ] **Reconnects on its own after a ConfluenceVoice restart, with no viewer action** — wolfvoice's own `docs/SERVER.md` claims "viewers re-provision automatically within a few seconds." Every restart tonight (2026-09-27) needed a manual relog or a voice toggle from both testers; nobody waited without touching anything first, so this is genuinely untested, not confirmed broken. Leading theory: specific to a mixed Vivox/WebRTC/ThinkVox grid (see "Mixed grids" below), not a general failure — try this on the next restart before assuming either way.
+- [ ] **Reconnects on its own after a ConfluenceVoice restart, with no viewer action** — **confirmed false, 2026-09-27, Firestorm 7.2.5.** wolfvoice's own `docs/SERVER.md` claims "viewers re-provision automatically within a few seconds"; that does not hold here. Properly tested this time: one participant connected and idle, restarted via the admin page's `/restart`, touched nothing. `sessions` stayed `0` on the server for 15+ minutes; the viewer's mic button went permanently greyed out with the voice dot still shown (stale). See "ConfluenceVoice restart cascades into a dead Vivox client too" below for the full recovery story — a plain relog is not enough by itself.
 - [ ] Session is removed when the viewer logs out (check `sessions` on `https://host:9443/`)
-- [ ] Voice connects from a viewer **outside** your network (needs `public_ip` and UDP 40000-40999 forwarded)
+- [x] Voice connects from a viewer **outside** your network (ongoing, both testers: New Zealand and Indiana, USA, over `casperia.ddns.net:8002` — see the note in "What has been verified" above)
 - [ ] Voice works from a viewer on a network that blocks outbound UDP (expected to fail: no TURN)
 
 ### Nearby (spatial) voice — needs two or more real participants
@@ -167,6 +167,49 @@ requests to the Vivox module instead of failing them, so the viewer's Vivox clie
 credentials and never calls `giveUp`. Confirmed live: the region log shows a real Vivox admin
 connection established, not the rejection above. Stock viewers cannot be changed, so this had
 to be fixed region-side.
+
+### ConfluenceVoice restart cascades into a dead Vivox client too
+Symptom, seen 2026-09-27 (Firestorm 7.2.5, one participant, admin page's `/restart`
+used deliberately while connected and idle, to test the checklist item above):
+
+1. Restarted ConfluenceVoice via the admin page. The new process came up clean
+   (confirmed via its own `/` status endpoint), but the viewer's session was gone:
+   `sessions` stayed `0` server-side for 15+ minutes with nothing touched. In the
+   viewer, the voice dot stayed (stale UI, never cleared — no leave notice was sent,
+   since nothing tears down the *viewer's* stale state) but the mic button was
+   permanently greyed out. Matches the checklist finding above: no automatic
+   reconnect happens.
+2. Tried the no-relog workaround that fixes the ordinary Vivox `giveUp` cascade
+   (Preferences → Sound & Media → Voice, untick "Enable voice chat", OK, tick again,
+   OK). It did **not** restore the WebRTC session — still `sessions: 0` afterward —
+   and it also kicked off a real Vivox connection attempt, which failed with
+   Firestorm's standard "We are unable to connect to the voice server: www.osp.vivox.com"
+   dialog (real SIP/RTP ports listed, nothing ConfluenceVoice-related).
+3. A full relog while still standing in Sandbox got WebRTC working again
+   (`sessions: 1` server-side, voice confirmed working) — but reproduced the SAME
+   Vivox connection-failure dialog immediately on login, and this time it stuck:
+   voice was then also dead on other, Vivox-only sims on the grid for the rest of
+   that session.
+4. Fix: log out and log back in starting **at a Vivox-enabled sim** (confirmed
+   working: UFPGC), not at Sandbox. Vivox then connects successfully from the very
+   start of the session, with no failed request to trigger `giveUp` in the first
+   place.
+
+Root cause, tying this to the "Mixed grids" entry above: Sandbox's region-side fix
+hands Firestorm's Vivox client **real** credentials instead of an instant rejection,
+specifically to avoid ever triggering `giveUp`. That assumes the real Vivox service
+is reachable. It was not, here — so Firestorm got a real connection failure instead
+of a fake rejection, and by the look of it that failure reaches `giveUp` just the
+same. The fix's whole premise (coexist with a working Vivox) doesn't hold once
+Vivox itself is the thing that's down; no region-side change on our end can fix
+that.
+
+Practical upshot: **starting a session anywhere that attempts a WebRTC voice
+connection can leave Vivox unusable for the rest of that login, grid-wide, if the
+real Vivox service is unreachable when Firestorm tries it.** If you need Vivox
+today, log in at a Vivox sim, not Sandbox. This is also the strongest argument yet
+for steering people at ConfluenceVoice rather than treating Vivox as a fallback —
+see the README's Alternatives section.
 
 ### Voice never connects after teleporting through Vivox regions
 Symptom: the region log shows `voice_server_type is not 'webrtc'` for requests of type

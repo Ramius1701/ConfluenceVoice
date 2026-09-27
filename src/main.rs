@@ -807,7 +807,7 @@ h2 {{ font-size: 1.1em; margin-top: 1.5em; }}
 <form method="post" action="/reload" onsubmit="return confirm('Reload confluencevoice.toml now? Only the IP allow-list and TURN settings are applied live; everything else needs a restart.');">
 <button type="submit">Reload config</button>
 </form>
-<form method="post" action="/restart" onsubmit="return confirm('Restart ConfluenceVoice now? Everyone connected will need to reconnect.');">
+<form method="post" action="/restart" onsubmit="return confirm('Restart ConfluenceVoice now? Everyone connected will need to fully relog to get voice back — confirmed 2026-09-27 that reconnecting on its own, and the usual voice on/off toggle, do NOT recover it. See docs/TESTING.md.');">
 <button type="submit">Restart</button>
 </form>
 <form method="post" action="/stop" onsubmit="return confirm('Stop ConfluenceVoice now? Voice stays down until it is started again by hand — this page cannot start it back up.');">
