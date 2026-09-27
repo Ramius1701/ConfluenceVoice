@@ -12,6 +12,7 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::mixer::{self, FRAME_SAMPLES};
 use crate::proto::{self, RosterEntry};
@@ -84,6 +85,12 @@ pub struct Session {
     /// True while this viewer's SLData data channel is open. Roster updates can only be
     /// delivered then, so nothing may be marked as announced to this listener before it.
     pub dc_open: AtomicBool,
+    /// When the peer connection last entered WebRTC's Disconnected state, or None if it
+    /// is not currently disconnected. Disconnected does not by itself mean the peer is
+    /// gone — see session.rs's on_connection_state_change — but one that never recovers
+    /// is escalated to closed after a grace period by escalate_stale_disconnects, so a
+    /// truly-dead peer does not hold its port and mixer slot forever.
+    pub disconnected_since: Mutex<Option<Instant>>,
 
     /// Agents we have already announced to this listener, so a join is sent once.
     announced: Mutex<HashSet<String>>,
@@ -105,6 +112,7 @@ impl Session {
             primary: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             dc_open: AtomicBool::new(false),
+            disconnected_since: Mutex::new(None),
             announced: Mutex::new(HashSet::new()),
         }
     }
@@ -272,12 +280,84 @@ impl Registry {
     }
 }
 
+/// Escalate any session that has been reported Disconnected (not Failed/Closed) for at
+/// least `grace` with no recovery to Connected. WebRTC's Disconnected state alone does
+/// not mean the peer is gone — it fires on a few seconds of missed connectivity checks
+/// and genuinely recovers for real viewers on flaky links, which is why
+/// on_connection_state_change deliberately does not treat it as terminal. But one that
+/// never recovers would otherwise hold its media port and mixer slot forever. Setting
+/// `closed` here is enough: the mixer loop's own reaper (main.rs) already tears down
+/// anything with `closed` set, on its next tick.
+pub fn escalate_stale_disconnects(sessions: &[Arc<Session>], grace: Duration) {
+    for s in sessions {
+        if s.closed.load(Ordering::Relaxed) {
+            continue;
+        }
+        let since = *s.disconnected_since.lock();
+        if since.is_some_and(|t| t.elapsed() >= grace) {
+            log::warn!(
+                "session {} agent {} disconnected for over {grace:?} with no recovery; closing",
+                s.id,
+                s.agent_id
+            );
+            s.closed.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Reusable stereo mix buffers, so a fresh `Vec<f32>` (1920 samples, ~7.5 KB) is not
+/// allocated and dropped for every listener on every 20 ms tick. A stress test at 120
+/// sessions showed the mixer missing its tick deadline well before CPU was the limit
+/// (211% of one core used out of 1600% available, yet ticks still got skipped) — this
+/// and the matching Opus-encode buffer in session.rs are the two per-tick allocations
+/// on that path. Module-private and Mutex-guarded rather than threaded through
+/// `mix_room`'s signature, so the function stays testable exactly as before with no
+/// pool to construct in every test.
+static STEREO_POOL: Mutex<Vec<Vec<f32>>> = Mutex::new(Vec::new());
+
+// Pool logic takes the pool explicitly so tests can exercise it against a private,
+// isolated instance instead of the real global one — this crate's tests run each
+// #[test] concurrently, and mix_room calls from unrelated tests hit STEREO_POOL too, so
+// asserting exact buffer identity against the shared static would be flaky.
+fn take_from(pool: &Mutex<Vec<Vec<f32>>>) -> Vec<f32> {
+    pool.lock().pop().unwrap_or_else(|| vec![0.0f32; FRAME_SAMPLES * 2])
+}
+
+fn give_to(pool: &Mutex<Vec<Vec<f32>>>, buf: Vec<f32>) {
+    let mut p = pool.lock();
+    // Cap how many idle buffers accumulate: a burst of listeners leaving at once should
+    // not let this grow without bound. 256 buffers is ~2 MB, far more than any real tick
+    // count, so this is a safety ceiling, not a tuned limit.
+    if p.len() < 256 {
+        p.push(buf);
+    }
+}
+
+fn take_stereo_buf() -> Vec<f32> {
+    take_from(&STEREO_POOL)
+}
+
+fn give_stereo_buf(buf: Vec<f32>) {
+    give_to(&STEREO_POOL, buf)
+}
+
 /// What one listener should be sent this tick: the mixed stereo frame and any
 /// roster changes.
 pub struct ListenerOutput {
     pub session: Arc<Session>,
     pub stereo: Vec<f32>,
     pub roster: Option<String>,
+}
+
+impl Drop for ListenerOutput {
+    fn drop(&mut self) {
+        // Runs once this tick's send has completed (or been skipped) and the caller's
+        // ListenerOutput goes out of scope, on every path — success, a missing
+        // endpoint, or a closed data channel — since it is unconditional cleanup, not
+        // tied to how the send went. std::mem::take leaves an empty Vec behind (no
+        // allocation) and moves the real buffer back to the pool.
+        give_stereo_buf(std::mem::take(&mut self.stereo));
+    }
 }
 
 /// Compute one 20 ms tick for a whole room.
@@ -340,7 +420,8 @@ pub fn mix_room(members: &[Arc<Session>]) -> Vec<ListenerOutput> {
             contributions.push(mixer::Contribution { frame, gain, pan });
         }
 
-        let mut stereo = vec![0.0f32; FRAME_SAMPLES * 2];
+        let mut stereo = take_stereo_buf();
+        debug_assert_eq!(stereo.len(), FRAME_SAMPLES * 2, "pooled buffer has the wrong length");
         mixer::mix_stereo(&contributions, &mut stereo);
 
         out.push(ListenerOutput {
@@ -507,6 +588,72 @@ mod tests {
 
     fn loud(s: &Arc<Session>) {
         s.push_frame(vec![0.4f32; FRAME_SAMPLES]);
+    }
+
+    #[test]
+    fn stale_disconnect_is_closed_only_after_the_grace_period() {
+        let a = session("a", "agent-a", [0.0, 0.0, 0.0]);
+
+        // Never disconnected: untouched.
+        escalate_stale_disconnects(&[a.clone()], Duration::from_secs(60));
+        assert!(!a.closed.load(Ordering::Relaxed));
+
+        // Disconnected, but well within grace.
+        *a.disconnected_since.lock() = Some(Instant::now());
+        escalate_stale_disconnects(&[a.clone()], Duration::from_secs(60));
+        assert!(!a.closed.load(Ordering::Relaxed), "must not close before grace elapses");
+
+        // Disconnected long enough ago.
+        *a.disconnected_since.lock() = Some(Instant::now() - Duration::from_secs(61));
+        escalate_stale_disconnects(&[a.clone()], Duration::from_secs(60));
+        assert!(a.closed.load(Ordering::Relaxed), "must close once grace has elapsed");
+    }
+
+    #[test]
+    fn recovered_connection_is_never_escalated() {
+        let a = session("a", "agent-a", [0.0, 0.0, 0.0]);
+        // Cleared by on_connection_state_change on reaching Connected — see session.rs.
+        *a.disconnected_since.lock() = None;
+        escalate_stale_disconnects(&[a.clone()], Duration::from_secs(0));
+        assert!(!a.closed.load(Ordering::Relaxed), "None must never be treated as disconnected");
+    }
+
+    #[test]
+    fn stereo_buffer_is_recycled_not_reallocated() {
+        // A private pool, not the shared STEREO_POOL: exact pointer identity would be
+        // flaky against the real one while other tests' mix_room calls run concurrently.
+        let pool: Mutex<Vec<Vec<f32>>> = Mutex::new(Vec::new());
+
+        let buf = take_from(&pool);
+        let ptr = buf.as_ptr();
+        give_to(&pool, buf);
+
+        let recycled = take_from(&pool);
+        assert_eq!(recycled.as_ptr(), ptr, "expected the same allocation back, not a new one");
+        assert_eq!(recycled.len(), FRAME_SAMPLES * 2);
+    }
+
+    #[test]
+    fn listener_output_drop_returns_its_buffer_to_the_shared_pool() {
+        // Unlike the test above, this one deliberately goes through the real
+        // give_stereo_buf/STEREO_POOL, since that is what ListenerOutput::drop is wired
+        // to — the point is to prove that wiring exists, not to re-prove recycling
+        // itself. A count comparison (pool grew by exactly one) is NOT safe here: other
+        // tests' own ListenerOutputs are being dropped into this same shared pool at the
+        // same time. Checking that our specific buffer is present afterwards is robust
+        // to that unrelated traffic — the only way to defeat it is another thread
+        // popping this exact buffer back out in the same instant, which is negligible
+        // for synchronous, no-yield-point operations like these.
+        let a = session("a", "agent-a", [0.0, 0.0, 0.0]);
+        loud(&a);
+        let mut out = mix_room(std::slice::from_ref(&a));
+        let ptr = out[0].stereo.as_ptr();
+        drop(out.pop().unwrap());
+
+        let mut pool = STEREO_POOL.lock();
+        let pos = pool.iter().position(|b| b.as_ptr() == ptr);
+        assert!(pos.is_some(), "ListenerOutput's Drop impl must return its buffer to STEREO_POOL");
+        pool.swap_remove(pos.unwrap()); // leave the shared pool as we found it
     }
 
     #[test]

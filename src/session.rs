@@ -194,17 +194,36 @@ impl PeerConnectionEventHandler for Handler {
             self.session.agent_id,
             state
         );
-        // Disconnected is deliberately NOT terminal. In WebRTC it only means the peer has
-        // stopped answering connectivity checks for a few seconds, and the connection
-        // often recovers on its own — normal for a viewer across the internet. If it
-        // does not recover the library moves on to Failed after its own timeout, which
-        // does end the session. Treating Disconnected as final tore down remote
-        // viewers' sessions within seconds, forcing them to re-provision over and over.
-        if matches!(
-            state,
-            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
-        ) {
-            self.session.closed.store(true, Ordering::Relaxed);
+        // Disconnected is deliberately NOT terminal by itself. In WebRTC it only means
+        // the peer has stopped answering connectivity checks for a few seconds, and the
+        // connection often recovers on its own — normal for a viewer across the
+        // internet. Treating it as final tore down remote viewers' sessions within
+        // seconds, forcing them to re-provision over and over.
+        //
+        // Confirmed live (2026-09-27, a real remote viewer's connection dropping and
+        // recovering over several cycles): this library does reliably follow an
+        // unrecovered Disconnected with Failed on its own, about 24-25s later in every
+        // case observed. So in the ordinary case this state is just bookkeeping for
+        // room::escalate_stale_disconnects, not the only thing standing between a dead
+        // peer and a leaked session. It exists as a backstop for whatever the ordinary
+        // case does not cover — a load test separately left sessions sitting well past
+        // when their (abruptly-killed, no close handshake) client processes exited,
+        // and closing a Disconnected session unconditionally without ever seeing Failed
+        // is the one path known to reach that state.
+        match state {
+            RTCPeerConnectionState::Connected => {
+                *self.session.disconnected_since.lock() = None;
+            }
+            RTCPeerConnectionState::Disconnected => {
+                let mut since = self.session.disconnected_since.lock();
+                if since.is_none() {
+                    *since = Some(std::time::Instant::now());
+                }
+            }
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
+                self.session.closed.store(true, Ordering::Relaxed);
+            }
+            _ => {}
         }
     }
 

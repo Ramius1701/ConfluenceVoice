@@ -37,6 +37,15 @@ use session::{Endpoint, PortPool};
 /// Mixer cadence. One Opus frame per tick per listener.
 const TICK: Duration = Duration::from_millis(20);
 
+/// How long a session may sit in WebRTC's Disconnected state with no recovery before
+/// it is closed outright. Confirmed live that a real drop normally reaches Failed (and
+/// so gets cleaned up) on its own well under this — see session.rs's
+/// on_connection_state_change — so this is a backstop for whatever that ordinary path
+/// does not cover, not the usual cleanup route. Generous on purpose: closing a
+/// connection that was about to recover is worse than leaving a dead one for another
+/// half-minute.
+const DISCONNECT_GRACE: Duration = Duration::from_secs(60);
+
 /// Largest JSON-RPC body we will read. The biggest legitimate one is an SDP offer
 /// plus a trickled ICE candidate list; a few hundred KiB is ample.
 const MAX_RPC_BODY: usize = 256 * 1024;
@@ -252,6 +261,18 @@ async fn mixer_loop(app: Arc<App>) {
             continue;
         }
 
+        // Close anything stuck Disconnected past the grace period before reaping —
+        // see room::escalate_stale_disconnects for why Disconnected alone is not enough
+        // reason to close a session, and session.rs's on_connection_state_change for
+        // what normally does close one before this backstop is ever needed.
+        let sessions: Vec<Arc<Session>> = app
+            .endpoints
+            .read()
+            .values()
+            .map(|ep| ep.session.clone())
+            .collect();
+        room::escalate_stale_disconnects(&sessions, DISCONNECT_GRACE);
+
         // Reap anything the transport marked dead before mixing.
         let dead: Vec<String> = app
             .endpoints
@@ -285,7 +306,7 @@ async fn mixer_loop(app: Arc<App>) {
                 let outputs = room::mix_room(&members);
 
                 let mut handles = Vec::with_capacity(outputs.len());
-                for out in outputs {
+                for mut out in outputs {
                     let app = app.clone();
                     handles.push(tokio::spawn(async move {
                         let Some(ep) = app.endpoint(&out.session.id) else {
@@ -296,7 +317,10 @@ async fn mixer_loop(app: Arc<App>) {
                         if !ep.data_channel_open() {
                             return;
                         }
-                        if let Some(roster) = out.roster {
+                        // .take() rather than moving the field: ListenerOutput's Drop
+                        // impl returns out.stereo to the reuse pool, and a Drop type's
+                        // fields cannot be partially moved out.
+                        if let Some(roster) = out.roster.take() {
                             // Joins are rare; level updates arrive every 20 ms, so only joins
                             // are logged at info.
                             if roster.contains(r#""j""#) {
