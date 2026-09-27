@@ -18,7 +18,7 @@ use rtc::media::Sample;
 use rtc::media_stream::MediaStreamTrack;
 use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
 use rtc::peer_connection::configuration::media_engine::{MediaEngine, MIME_TYPE_OPUS};
-use rtc::peer_connection::configuration::RTCConfigurationBuilder;
+use rtc::peer_connection::configuration::{RTCConfigurationBuilder, RTCIceServer};
 use rtc::peer_connection::sdp::RTCSessionDescription;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use rtc::rtp_transceiver::rtp_sender::{
@@ -342,6 +342,7 @@ pub async fn establish(
     bind_ip: Option<&str>,
     port: u16,
     runtime: Arc<dyn Runtime>,
+    ice_servers: Vec<RTCIceServer>,
 ) -> Result<Endpoint, String> {
     // Opus only — this is a voice service and offering anything else just invites
     // the viewer to negotiate something we cannot mix.
@@ -364,12 +365,17 @@ pub async fn establish(
     let registry = register_default_interceptors(InterceptorRegistry::new(), &mut media_engine)
         .map_err(|e| format!("interceptors: {e}"))?;
 
-    // No ICE servers: we are the answerer on a directly-attached public address,
-    // so our host candidates are already routable. The VIEWER has no working STUN
-    // either — llvoicewebrtc.cpp:2883 hardcodes stun%d.<grid>.secondlife.io, which
-    // does not resolve off Second Life — so connectivity relies on the viewer
-    // reaching our host candidate and us learning its peer-reflexive address.
-    let config = RTCConfigurationBuilder::new().build();
+    // We are the answerer on a directly-attached (or NAT-forwarded, via bind_ip)
+    // public address, so our own host/srflx candidates are already routable without
+    // STUN. The VIEWER has no working STUN either — llvoicewebrtc.cpp:2883 hardcodes
+    // stun%d.<grid>.secondlife.io, which does not resolve off Second Life. TURN is the
+    // one thing neither side can substitute for: a viewer whose network blocks direct
+    // outbound UDP has no route to us at all without a relay. ice_servers is empty
+    // unless the operator configured one (config.rs's turn_urls) — no TURN configured
+    // means no relay offered, same as upstream wolfvoice.
+    let config = RTCConfigurationBuilder::new()
+        .with_ice_servers(ice_servers)
+        .build();
 
     let dc_slot: Arc<Mutex<Option<Arc<dyn DataChannel>>>> = Arc::new(Mutex::new(None));
     let gathered = Arc::new(AtomicBool::new(false));

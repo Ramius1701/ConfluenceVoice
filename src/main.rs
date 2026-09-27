@@ -23,7 +23,7 @@ use hyper::service::service_fn;
 use hyper::{Body, Method, Request, Response, StatusCode};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -58,6 +58,11 @@ struct App {
     bind_ip: Option<String>,
     max_sessions: usize,
     runtime: Arc<dyn webrtc::runtime::Runtime>,
+    /// Empty means accept from anywhere (the previous, only, behaviour).
+    allowed_region_ips: Vec<IpAddr>,
+    /// Built once from config and handed to every session — see config.rs's
+    /// turn_urls/turn_username/turn_credential.
+    ice_servers: Vec<rtc::peer_connection::configuration::RTCIceServer>,
 }
 
 impl App {
@@ -182,6 +187,7 @@ impl App {
             self.bind_ip.as_deref(),
             port,
             self.runtime.clone(),
+            self.ice_servers.clone(),
         )
         .await?;
 
@@ -497,7 +503,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bind_ip: cfg.bind_ip.clone(),
         max_sessions: cfg.max_sessions,
         runtime: Arc::new(webrtc::runtime::TokioRuntime),
+        allowed_region_ips: cfg.allowed_region_ips.clone(),
+        ice_servers: if cfg.turn_urls.is_empty() {
+            Vec::new()
+        } else {
+            vec![rtc::peer_connection::configuration::RTCIceServer {
+                urls: cfg.turn_urls.clone(),
+                username: cfg.turn_username.clone().unwrap_or_default(),
+                credential: cfg.turn_credential.clone().unwrap_or_default(),
+                ..Default::default()
+            }]
+        },
     });
+
+    if cfg.allowed_region_ips.is_empty() {
+        log::warn!(
+            "allowed_region_ips is not set: the JSON-RPC port accepts connections from \
+             anywhere. Set it to your region hosts' addresses in confluencevoice.toml \
+             once you know them — this port has no other authentication."
+        );
+    } else {
+        log::info!(
+            "JSON-RPC port restricted to {} address(es): {:?}",
+            cfg.allowed_region_ips.len(),
+            cfg.allowed_region_ips
+        );
+    }
+    if !cfg.turn_urls.is_empty() {
+        log::info!("TURN relay configured: {:?}", cfg.turn_urls);
+    }
 
     tokio::spawn(mixer_loop(app.clone()));
 
@@ -529,6 +563,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         };
+        if !app.allowed_region_ips.is_empty() && !app.allowed_region_ips.contains(&peer.ip()) {
+            log::warn!("rejecting connection from {peer}: not in allowed_region_ips");
+            continue;
+        }
+
         let acceptor = acceptor.clone();
         let app = app.clone();
         tokio::spawn(async move {
