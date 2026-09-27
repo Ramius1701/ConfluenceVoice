@@ -27,7 +27,8 @@ date and viewer version beside it.
 - [x] Region provisions a viewer and the peer connection connects (2026-09-27, Firestorm 7.2.5)
 - [x] `SLData` data channel opens (2026-09-27, Firestorm 7.2.5)
 - [ ] Reconnects after a viewer relog, and after the region restarts
-- [ ] **Reconnects on its own after a ConfluenceVoice restart, with no viewer action** — **confirmed false, 2026-09-27, Firestorm 7.2.5.** wolfvoice's own `docs/SERVER.md` claims "viewers re-provision automatically within a few seconds"; that does not hold here. Properly tested this time: one participant connected and idle, restarted via the admin page's `/restart`, touched nothing. `sessions` stayed `0` on the server for 15+ minutes; the viewer's mic button went permanently greyed out with the voice dot still shown (stale). See "ConfluenceVoice restart cascades into a dead Vivox client too" below for the full recovery story — a plain relog is not enough by itself.
+- [ ] **Reconnects on its own after a ConfluenceVoice restart, with no viewer action** — **confirmed false, 2026-09-27, Firestorm 7.2.5.** wolfvoice's own `docs/SERVER.md` claims "viewers re-provision automatically within a few seconds"; that does not hold here. Properly tested this time: one participant connected and idle, restarted via the admin page's `/restart`, touched nothing. `sessions` stayed `0` on the server for 15+ minutes; the viewer's mic button went permanently greyed out with the voice dot still shown (stale). Confirmed grid-wide 2026-09-27, after all 15 regions were migrated off Vivox: the "restart also kills Vivox" cascade is gone now that nothing on the grid runs Vivox, but the underlying no-auto-reconnect behavior is unchanged.
+  - **Lighter recovery confirmed, 2026-09-28: teleporting away and back re-establishes voice, no relog needed.** After a live restart, teleported Sandbox → Welcome_Center → Sandbox; the return teleport produced a real new session server-side (ICE connected, data channel open, fully joined) — this is a genuinely working, much cheaper alternative to a full relog. (A second, immediate teleport a few seconds later interrupted that session mid-reconnect and looked briefly like a server-side race condition — it wasn't; the client log showed a real second `startTeleportRequest` at that exact moment, i.e. self-inflicted by teleporting twice in quick succession, not a bug. Don't chase that as a race condition again without a client log confirming there was only one teleport.)
 - [ ] Session is removed when the viewer logs out (check `sessions` on `https://host:9443/`)
 - [x] Voice connects from a viewer **outside** your network (ongoing, both testers: New Zealand and Indiana, USA, over `casperia.ddns.net:8002` — see the note in "What has been verified" above)
 - [ ] Voice works from a viewer on a network that blocks outbound UDP (expected to fail: no TURN)
@@ -169,6 +170,12 @@ connection established, not the rejection above. Stock viewers cannot be changed
 to be fixed region-side.
 
 ### ConfluenceVoice restart cascades into a dead Vivox client too
+**Superseded 2026-09-27: moot now that all 15 regions are WebRTC-only.** This cascade
+needed a still-Vivox region for the dead client to matter on; with Vivox disabled
+grid-wide there is nothing left for it to break. Left below for the mechanism (it is
+also why the coexistence patch in `WebRtcVoiceRegionModule.cs` existed and was
+retired, not because it stopped working) and in case Vivox is ever reintroduced.
+
 Symptom, seen 2026-09-27 (Firestorm 7.2.5, one participant, admin page's `/restart`
 used deliberately while connected and idle, to test the checklist item above):
 
