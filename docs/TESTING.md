@@ -40,11 +40,11 @@ date and viewer version beside it.
 - [ ] Panning: a speaker to your left is louder in the left ear, and it follows you turning
 - [ ] Distance: full volume within 10 m, fading out, silent beyond 60 m
 - [ ] Per-person volume slider and per-person mute affect only that listener
-- [ ] Crossing into a neighbouring region keeps voice, without a gap or a duplicate participant
+- [ ] Crossing into a neighbouring region keeps voice, without a gap or a duplicate participant — **a single clean crossing is untested; repeated/rapid crossing is confirmed broken, see "Voice does not survive rapid region-border crossings" below.**
 - [x] Teleporting within the region keeps the same voice session (2026-09-27, Firestorm 7.2.5, one participant)
 - [ ] Teleporting to another region and back reconnects cleanly
 - [ ] Two parcels with different voice settings: parcel channel and estate channel behave as set
-- [ ] Voice disabled on a parcel or estate silences it, and re-enabling restores it
+- [ ] Voice disabled on a parcel or estate silences it, and re-enabling restores it — **half-confirmed 2026-09-27**: Sector_001/002/003 genuinely had voice off at the parcel level (nothing to do with the WebRTC migration — those parcels predate voice being relevant to them and nobody had turned it on). Silencing is confirmed; **re-enabling and confirming it comes back is not yet tested.**
 
 ### Group and person-to-person voice — implemented, never run live
 - [ ] Group voice call: all members hear each other, not positional
@@ -217,6 +217,47 @@ real Vivox service is unreachable when Firestorm tries it.** If you need Vivox
 today, log in at a Vivox sim, not Sandbox. This is also the strongest argument yet
 for steering people at ConfluenceVoice rather than treating Vivox as a fallback —
 see the README's Alternatives section.
+
+### Voice does not survive rapid region-border crossings
+**Confirmed 2026-09-27/28, genuinely unresolved — read this before assuming it's fixed.**
+
+Symptom: standing near a corner where several regions meet (Sector_001-004 on this
+grid), voice never stabilizes. Client log shows a tight loop, repeating every 5-15
+seconds for as long as the avatar stays near the corner:
+
+1. `process_crossed_region()` — a real, automatic border handoff, not a teleport.
+2. Firestorm tears down the current voice peer connection
+   (`LLVoiceWebRTCConnection::breakVoiceConnectionCoro`).
+3. It builds a **complete new one from scratch** for whichever region it's now in:
+   fresh SDP offer, fresh ICE gathering, fresh DTLS handshake. This reaches
+   `connected` and `Data Channel State: open` — it does genuinely work — typically
+   4-15 seconds after the crossing.
+4. Before anything is heard, the next crossing fires and the cycle repeats.
+
+Region-side, this shows up as the same viewer session being logged out as a "stall
+session" (`WebRtcVoiceRegionModule.cs`'s stall-cleanup path) roughly every 16 seconds,
+with no successful connection landing in between.
+
+**What is NOT yet known: whether this is worse than Vivox, the same, or unrelated to
+the voice backend entirely.** `process_crossed_region()` itself is universal
+OpenSim/SL behaviour, independent of voice system — that part is certain. What is
+not verified is whether Vivox's reconnection is actually lighter-weight here.
+Vivox's spatial voice is SIP-based; switching to a new channel on an
+already-connected SIP session is plausibly a much cheaper operation than what
+WebRTC does above (a full peer connection rebuild, ICE and DTLS included, every
+single time) — if so, Vivox could ride out the exact same border oscillation
+without an audible gap, while WebRTC cannot. This is a real architectural
+hypothesis, not a confirmed explanation: Vivox is now disabled grid-wide (see
+above), so it cannot be tested side-by-side on this grid to confirm or rule it out.
+
+Workaround: move away from the region corner. This hides the symptom, it does not
+fix it — anyone who parks or builds near a region border will hit this.
+
+Not yet investigated: whether Firestorm's `llvoicewebrtc.cpp` could reuse the
+existing peer connection across a same-server crossing (all these regions share one
+ConfluenceVoice instance) instead of rebuilding from zero, which would be the real
+fix if the SIP-channel-switch hypothesis above is right. That is viewer-side code,
+not something fixable from ConfluenceVoice or the region module.
 
 ### Voice never connects after teleporting through Vivox regions
 Symptom: the region log shows `voice_server_type is not 'webrtc'` for requests of type
