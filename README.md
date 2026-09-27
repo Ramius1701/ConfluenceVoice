@@ -216,7 +216,12 @@ After that:
    Vivox had. The protocol field exists; the server currently always reports it as
    `false`.
 
-On hold: a Windows Service wrapper (start automatically, no console window).
+On hold: a Windows Service wrapper (start automatically, no console window). For
+reference when this resumes: wolfvoice's `contrib/wolfvoice.service` restarts on crash
+(`Restart=always`, 2s delay), bounds memory to 2G "to bound a runaway rather than size
+normal use," and sandboxes the process heavily (`ProtectSystem=strict` and similar) —
+worth carrying the same intent into whatever Windows equivalent gets built, not just the
+"starts automatically" part.
 
 ## Testing it without a viewer
 
