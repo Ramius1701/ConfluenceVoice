@@ -89,14 +89,25 @@ a 12-core Linux VM) were measured over — the two are not a fair apples-to-appl
 All connections succeeded at every tier, including 120/60 — the failure is missed mixer
 deadlines under load, not connection capacity.
 
-**The tick-overload finding, unexplained:** at 120 sessions the mixer missed its 20ms
-deadline while using only ~13% of this machine's total CPU (2.1 of 16 cores). That is not a
-raw CPU shortage — something about meeting the real-time deadline was the problem, not
-raw throughput. The buffer-reuse fix in `room.rs` (avoiding a fresh allocation per
-listener per tick) was written specifically because of this finding, on the theory that
-allocator contention under load was a likely cause, but **this table predates that fix and
-has not been re-measured since** — the numbers above are the pre-fix baseline, not
-confirmation the fix helped. Re-running this same table is the natural next step.
+**The tick-overload finding.** At 120 sessions the mixer missed its 20ms deadline while
+using only ~13% of this machine's total CPU (2.1 of 16 cores) — not a raw CPU shortage,
+something about meeting the real-time deadline itself was the problem. Re-measured after
+the buffer-reuse fix (`room.rs`, reusing the per-listener mix buffer across ticks instead
+of allocating fresh every 20ms), same instance, same isolated setup, two consecutive
+120/60 runs:
+
+| Run | CPU used | Ticks skipped |
+|---|---|---|
+| pre-fix | 211% of one core | 103 of 500 in the worst 10s window |
+| post-fix, run 1 | 215% of one core | 1 |
+| post-fix, run 2 | 193% of one core | 1 |
+
+CPU cost is unchanged (all three runs are within normal run-to-run variance of each
+other), but skipped ticks dropped from 103 to consistently 1. That fits the theory this
+fix was written for: the same amount of work, done with far less allocator churn, avoids
+whatever was causing the mixer to miss its deadline — this wasn't a CPU-throughput problem
+at all. One tick still gets skipped at this tier even after the fix; the cause of that
+one has not been investigated.
 
 ## Problems found, and what fixed them
 
