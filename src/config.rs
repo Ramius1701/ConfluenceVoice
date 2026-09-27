@@ -68,6 +68,11 @@ pub struct Config {
     pub turn_urls: Vec<String>,
     pub turn_username: Option<String>,
     pub turn_credential: Option<String>,
+
+    /// Local admin page (status, and Stop/Restart buttons) — separate from the voice
+    /// port and unauthenticated, so it defaults to loopback-only and stays that way
+    /// unless deliberately changed. None disables it entirely.
+    pub admin_bind: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -86,9 +91,11 @@ struct RawConfig {
     turn_urls: Vec<String>,
     turn_username: Option<String>,
     turn_credential: Option<String>,
+    admin_bind: Option<String>,
 }
 
 const DEFAULT_RPC_BIND: &str = "0.0.0.0:9443";
+const DEFAULT_ADMIN_BIND: &str = "127.0.0.1:9444";
 const DEFAULT_MEDIA_PORT_LO: u16 = 40000;
 const DEFAULT_MEDIA_PORT_HI: u16 = 40999;
 const DEFAULT_MAX_SESSIONS: usize = 900;
@@ -148,6 +155,15 @@ tls_key = "tls\\privkey.pem"
 # turn_urls = ["turn:turn.example.com:3478"]
 # turn_username = "user"
 # turn_credential = "password"
+
+# The local admin page: status, and Stop/Restart buttons for this program. Defaults
+# ON, bound to 127.0.0.1 only — reachable from this machine, not the network. There
+# is no login: anyone who can reach this port can stop or restart voice for
+# everyone, so loopback-only is the safety boundary, not a password. To disable it
+# entirely, set this to an empty string. Changing it to anything other than
+# 127.0.0.1/localhost exposes Stop/Restart to whoever can reach that address — only
+# do that over something already access-controlled, like an SSH tunnel or a VPN.
+# admin_bind = "127.0.0.1:9444"
 "#;
 
 impl Config {
@@ -221,7 +237,20 @@ impl Config {
             turn_urls: raw.turn_urls,
             turn_username: raw.turn_username,
             turn_credential: raw.turn_credential,
+            admin_bind: resolve_admin_bind(raw.admin_bind),
         })
+    }
+}
+
+/// Absent means "use the safe default" (on, loopback-only); an explicit empty string
+/// means "disabled"; anything else is used as given. This is different from most other
+/// fields here specifically so that disabling the admin page is a deliberate action
+/// with its own visible line in the file, not merely deleting one.
+fn resolve_admin_bind(raw: Option<String>) -> Option<String> {
+    match raw {
+        None => Some(DEFAULT_ADMIN_BIND.to_string()),
+        Some(s) if s.trim().is_empty() => None,
+        Some(s) => Some(s.trim().to_string()),
     }
 }
 
@@ -266,6 +295,22 @@ fn validate_turn_config(turn_urls: &[String], has_username: bool, has_credential
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_bind_defaults_on_and_localhost_when_absent() {
+        assert_eq!(resolve_admin_bind(None), Some(DEFAULT_ADMIN_BIND.to_string()));
+    }
+
+    #[test]
+    fn admin_bind_empty_string_disables_it() {
+        assert_eq!(resolve_admin_bind(Some("".to_string())), None);
+        assert_eq!(resolve_admin_bind(Some("   ".to_string())), None, "whitespace-only counts as empty");
+    }
+
+    #[test]
+    fn admin_bind_explicit_value_is_used_as_given() {
+        assert_eq!(resolve_admin_bind(Some(" 0.0.0.0:9444 ".to_string())), Some("0.0.0.0:9444".to_string()));
+    }
 
     #[test]
     fn allowed_ips_parses_v4_and_v6_and_trims_whitespace() {

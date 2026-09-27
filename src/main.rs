@@ -499,6 +499,180 @@ fn load_tls(cert_path: &std::path::Path, key_path: &std::path::Path) -> Result<r
         .map_err(|e| format!("tls config: {e}"))
 }
 
+/// Binds with retries when the port is briefly still held by a just-exited process —
+/// specifically the race in admin_handle's /restart: the new instance can start trying
+/// to bind before the old one has fully released its sockets. Not needed on a genuine
+/// first-ever startup, where it just succeeds on the first attempt; harmless there too.
+/// The same "wait for the port to actually go quiet" principle used by hand all
+/// session for the real OpenSim region restarts, just automated here.
+async fn bind_with_retry(addr: SocketAddr, what: &str) -> std::io::Result<tokio::net::TcpListener> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => return Ok(l),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && tokio::time::Instant::now() < deadline => {
+                log::warn!("{what} bind on {addr} still in use (previous instance still exiting?), retrying: {e}");
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+// ─────────────────────────── Admin page ───────────────────────────
+//
+// Plain HTTP (no TLS), separate from the voice port and separate from
+// allowed_region_ips. There is no login — reachability IS the authorization
+// boundary, which is only safe because config.rs defaults admin_bind to
+// 127.0.0.1. Stop and Restart are the two operations that make sense for a
+// program to offer about itself: a genuinely stopped process cannot serve a
+// "start" request, since nothing would be listening to receive it — that needs
+// an external supervisor instead (see the on-hold Windows Service wrapper).
+
+/// Serves the admin page until the process exits. Errors here (a bad bind address,
+/// the port already in use) disable the admin page rather than taking down voice —
+/// this is a convenience on top of the real service, not a dependency of it.
+async fn admin_server(app: Arc<App>, bind: String) {
+    let addr: SocketAddr = match bind.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            log::error!("admin_bind {bind:?} is not a valid address: {e}; admin page disabled");
+            return;
+        }
+    };
+    let listener = match bind_with_retry(addr, "admin page").await {
+        Ok(l) => l,
+        Err(e) => {
+            log::error!("could not bind admin page on {addr}: {e}; admin page disabled");
+            return;
+        }
+    };
+    if !addr.ip().is_loopback() {
+        log::warn!(
+            "admin page bound to {addr}, which is NOT loopback-only — anyone who can reach \
+             this address can stop or restart voice for everyone, with no login. Restrict \
+             this at the firewall, or use an SSH tunnel/VPN instead of widening it directly."
+        );
+    }
+    log::info!("admin page on http://{addr}/");
+
+    loop {
+        let (stream, peer) = match listener.accept().await {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("admin accept: {e}");
+                continue;
+            }
+        };
+        let app = app.clone();
+        tokio::spawn(async move {
+            let svc = service_fn(move |req| admin_handle(app.clone(), req));
+            if let Err(e) = hyper::server::conn::Http::new()
+                .http1_only(true)
+                .serve_connection(stream, svc)
+                .await
+            {
+                log::debug!("admin connection from {peer}: {e}");
+            }
+        });
+    }
+}
+
+async fn admin_handle(app: Arc<App>, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+    let resp = match (req.method(), req.uri().path()) {
+        (&Method::GET, "/") => admin_status_page(&app),
+        (&Method::POST, "/stop") => {
+            log::warn!("admin: stop requested");
+            admin_exit_shortly();
+            admin_plain_response("Stopping. This page will stop responding shortly.")
+        }
+        (&Method::POST, "/restart") => {
+            log::warn!("admin: restart requested");
+            match std::env::current_exe() {
+                Ok(exe) => match std::process::Command::new(&exe).spawn() {
+                    Ok(child) => log::info!("admin: spawned new instance, pid {}", child.id()),
+                    Err(e) => log::error!("admin: failed to spawn new instance: {e}; not exiting"),
+                },
+                Err(e) => log::error!("admin: current_exe failed: {e}; not exiting"),
+            }
+            admin_exit_shortly();
+            admin_plain_response("Restarting. Reload this page in a few seconds.")
+        }
+        _ => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap(),
+    };
+    Ok(resp)
+}
+
+/// Exits the process shortly after this call returns, not immediately: the caller
+/// still needs to hand its HTTP response back to hyper so the browser actually sees
+/// a confirmation, rather than the connection just dying mid-request.
+fn admin_exit_shortly() {
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::process::exit(0);
+    });
+}
+
+fn admin_plain_response(msg: &str) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .body(Body::from(format!(
+            "<!doctype html><meta charset=utf-8><body style=font-family:sans-serif>{msg} \
+             <a href=/>Back</a></body>"
+        )))
+        .unwrap()
+}
+
+fn admin_status_page(app: &App) -> Response<Body> {
+    let html = format!(
+        r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>ConfluenceVoice admin</title>
+<style>
+body {{ font-family: system-ui, sans-serif; max-width: 32em; margin: 2em auto; padding: 0 1em; }}
+table {{ border-collapse: collapse; width: 100%; margin-bottom: 1.5em; }}
+th, td {{ text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid #ccc; }}
+form {{ display: inline-block; margin-right: 0.6em; }}
+button {{ padding: 0.5em 1.2em; font-size: 1em; cursor: pointer; }}
+.danger {{ background: #c0392b; color: white; border: 1px solid #a03024; }}
+</style></head>
+<body>
+<h1>ConfluenceVoice</h1>
+<table>
+<tr><th>Version</th><td>{version}</td></tr>
+<tr><th>Uptime</th><td>{uptime_secs} s</td></tr>
+<tr><th>Sessions</th><td>{sessions} / {max_sessions}</td></tr>
+<tr><th>Rooms</th><td>{rooms}</td></tr>
+<tr><th>Mixer ticks skipped (lifetime)</th><td>{ticks_skipped}</td></tr>
+<tr><th>IP allow-list active</th><td>{allow_list}</td></tr>
+<tr><th>TURN configured</th><td>{turn}</td></tr>
+</table>
+<form method="post" action="/restart" onsubmit="return confirm('Restart ConfluenceVoice now? Everyone connected will need to reconnect.');">
+<button type="submit">Restart</button>
+</form>
+<form method="post" action="/stop" onsubmit="return confirm('Stop ConfluenceVoice now? Voice stays down until it is started again by hand — this page cannot start it back up.');">
+<button type="submit" class="danger">Stop</button>
+</form>
+</body></html>"#,
+        version = env!("CARGO_PKG_VERSION"),
+        uptime_secs = app.started_at.elapsed().as_secs(),
+        sessions = app.sessions.session_count(),
+        max_sessions = app.max_sessions,
+        rooms = app.sessions.rooms().len(),
+        ticks_skipped = app.total_ticks_skipped.load(Ordering::Relaxed),
+        allow_list = if app.allowed_region_ips.is_empty() { "no" } else { "yes" },
+        turn = if app.ice_servers.is_empty() { "no" } else { "yes" },
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .body(Body::from(html))
+        .unwrap()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -552,10 +726,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(mixer_loop(app.clone()));
 
+    if let Some(admin_bind) = cfg.admin_bind.clone() {
+        tokio::spawn(admin_server(app.clone(), admin_bind));
+    } else {
+        log::info!("admin page disabled (admin_bind is empty in the config file)");
+    }
+
     let tls = Arc::new(load_tls(&cfg.tls_cert, &cfg.tls_key)?);
     let acceptor = tokio_rustls::TlsAcceptor::from(tls);
     let addr: SocketAddr = cfg.rpc_bind.parse()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = bind_with_retry(addr, "JSON-RPC port")
+        .await
+        .map_err(|e| format!("{addr}: {e}"))?;
 
     match &cfg.bind_ip {
         Some(bind) => log::info!(
