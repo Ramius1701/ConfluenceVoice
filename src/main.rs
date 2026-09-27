@@ -740,7 +740,7 @@ fn short_id(id: &str) -> &str {
 fn sessions_table_html(app: &App) -> String {
     let mut rooms = app.sessions.rooms();
     if rooms.is_empty() {
-        return "<p>No active sessions.</p>".to_string();
+        return "<p class=\"empty\">No active sessions.</p>".to_string();
     }
     // Stable order between refreshes (auto-refresh reloads this every few seconds;
     // rooms jumping around on every reload would make the page hard to read).
@@ -752,48 +752,71 @@ fn sessions_table_html(app: &App) -> String {
         members.sort_by_key(|s| s.created_at);
 
         html.push_str(&format!(
-            "<h3>{room} ({n})</h3><table><tr><th>Agent</th><th>Session</th><th>Type</th>\
+            "<div class=\"room\"><h3>{room} <span class=\"count\">{n} \
+             {noun}</span></h3><table><tr><th>Agent</th><th>Session</th><th>Type</th>\
              <th>Joined</th><th>Channel</th><th>Connected</th><th></th></tr>",
             room = html_escape(&room.to_string()),
             n = members.len(),
+            noun = if members.len() == 1 { "participant" } else { "participants" },
         ));
         for s in &members {
+            let joined = s.joined.load(Ordering::Relaxed);
+            let dc = s.dc_open.load(Ordering::Relaxed);
             html.push_str(&format!(
                 "<tr><td>{agent}</td><td><code>{sid}</code></td><td>{kind}</td>\
-                 <td>{joined}</td><td>{dc}</td><td>{secs} s</td><td>\
+                 <td>{joined}</td><td>{dc}</td><td>{secs}s</td><td>\
                  <form method=\"post\" action=\"/kick?id={id}\" \
                  onsubmit=\"return confirm('Disconnect {agent}? They will need to reconnect.');\">\
-                 <button type=\"submit\" class=\"danger\">Kick</button></form></td></tr>",
+                 <button type=\"submit\" class=\"danger small\">Kick</button></form></td></tr>",
                 agent = html_escape(&s.agent_id),
                 sid = short_id(&s.id),
                 kind = if s.spatial { "spatial" } else { "multiagent" },
-                joined = if s.joined.load(Ordering::Relaxed) { "yes" } else { "no" },
-                dc = if s.dc_open.load(Ordering::Relaxed) { "yes" } else { "no" },
+                joined = pill(joined),
+                dc = pill(dc),
                 secs = s.created_at.elapsed().as_secs(),
                 id = s.id,
             ));
         }
-        html.push_str("</table>");
+        html.push_str("</table></div>");
     }
     html
 }
 
+/// A yes/no pill, colored green/red — used for the session table's Joined/Channel
+/// columns so a problem session (joined=no, channel=no) is visible at a glance
+/// rather than requiring the operator to actually read the word.
+fn pill(on: bool) -> &'static str {
+    if on {
+        "<span class=\"pill yes\">yes</span>"
+    } else {
+        "<span class=\"pill no\">no</span>"
+    }
+}
+
 /// Renders the recent-warnings-and-errors panel — see LOG_RING / RingLogger below.
+/// Each line is colored by its level (read back out of the formatted text RingLogger
+/// wrote — see its "[{elapsed}s] {level:<5} {msg}" format) so ERROR jumps out from
+/// WARN without the operator reading every line.
 fn log_tail_html() -> String {
     let lines = recent_log_lines();
     if lines.is_empty() {
-        return "<p>No warnings or errors since startup.</p>".to_string();
+        return "<p class=\"empty\">No warnings or errors since startup.</p>".to_string();
     }
     let body = lines
         .iter()
-        .map(|l| html_escape(l))
+        .map(|l| {
+            let class = if l.contains("ERROR") {
+                "error"
+            } else if l.contains("WARN") {
+                "warn"
+            } else {
+                ""
+            };
+            format!("<span class=\"{class}\">{}</span>", html_escape(l))
+        })
         .collect::<Vec<_>>()
         .join("\n");
-    format!(
-        "<pre style=\"max-height:16em; overflow:auto; background:#f4f4f4; \
-         padding:0.6em; border:1px solid #ccc; white-space:pre-wrap; \
-         font-size:0.85em;\">{body}</pre>"
-    )
+    format!("<pre class=\"log\">{body}</pre>")
 }
 
 fn admin_plain_response(msg: &str) -> Response<Body> {
@@ -801,50 +824,114 @@ fn admin_plain_response(msg: &str) -> Response<Body> {
         .status(StatusCode::OK)
         .header("content-type", "text/html; charset=utf-8")
         .body(Body::from(format!(
-            "<!doctype html><meta charset=utf-8><body style=font-family:sans-serif>{msg} \
-             <a href=/>Back</a></body>"
+            r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>ConfluenceVoice admin</title>{ADMIN_CSS}</head>
+<body><div class="wrap"><section><p>{msg}</p><p><a href="/">&larr; Back to dashboard</a></p></section></div></body></html>"#,
         )))
         .unwrap()
 }
 
+/// Shared styling for the admin page and its action-confirmation responses. A single
+/// dark/light-aware stylesheet, inlined (no external fonts or scripts) since this is
+/// served by the binary itself with no build step or CDN to depend on.
+const ADMIN_CSS: &str = r#"<style>
+:root {
+  --bg: #f4f6fb; --panel: #ffffff; --border: #e2e6ef; --text: #1a1f2b; --muted: #5b6272;
+  --accent: #3b6fe0; --good: #17945a; --warn: #92700a; --danger: #c23b3b;
+  --good-bg: #e3f7ec; --warn-bg: #fdf3d8; --danger-bg: #fbe6e6; --log-bg: #11151f; --log-text: #c9d3e0;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1420; --panel: #161c2c; --border: #262f45; --text: #e6e9f0; --muted: #8b93a7;
+    --accent: #6f97ff; --good: #34d399; --warn: #fbbf24; --danger: #f87171;
+    --good-bg: rgba(52,211,153,0.14); --warn-bg: rgba(251,191,36,0.14); --danger-bg: rgba(248,113,113,0.14);
+    --log-bg: #05070c; --log-text: #c9d3e0;
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text);
+  margin: 0; padding: 2rem 1.25rem; }
+.wrap { max-width: 60rem; margin: 0 auto; }
+a { color: var(--accent); }
+header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 1.4rem; }
+h1 { font-size: 1.35rem; margin: 0; }
+.meta { color: var(--muted); font-size: 0.82rem; margin: 0.15rem 0 0; }
+.badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.75rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+.badge.good { background: var(--good-bg); color: var(--good); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
+.banner { display: flex; gap: 0.6rem; background: var(--warn-bg); border: 1px solid var(--warn); color: var(--warn);
+  border-radius: var(--radius); padding: 0.8rem 1rem; margin-bottom: 1.2rem; font-size: 0.88rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: 0.7rem; margin-bottom: 1.4rem; }
+.stat { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.85rem 1rem; }
+.stat .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 0.3rem; }
+.stat .value { font-size: 1.35rem; font-weight: 700; }
+.stat .value.good { color: var(--good); }
+.stat .value.warn { color: var(--warn); }
+.bar { height: 0.35rem; border-radius: 999px; background: var(--border); margin-top: 0.5rem; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); }
+section { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 1.1rem 1.25rem; margin-bottom: 1.2rem; }
+section > h2 { font-size: 0.82rem; margin: 0 0 0.9rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.room { margin-bottom: 1rem; }
+.room:last-child { margin-bottom: 0; }
+.room h3 { font-size: 0.92rem; margin: 0 0 0.4rem; }
+.room h3 .count { color: var(--muted); font-weight: 400; }
+.empty { color: var(--muted); font-size: 0.9rem; margin: 0; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th { text-align: left; color: var(--muted); font-weight: 500; font-size: 0.72rem; text-transform: uppercase;
+  letter-spacing: 0.03em; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
+td { padding: 0.5rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+code { background: var(--border); padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.82em; }
+.pill { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+.pill.yes { background: var(--good-bg); color: var(--good); }
+.pill.no { background: var(--danger-bg); color: var(--danger); }
+.log { max-height: 16rem; overflow: auto; background: var(--log-bg); color: var(--log-text); border-radius: 8px;
+  padding: 0.8rem 1rem; font: 0.8rem/1.55 ui-monospace, Consolas, "SF Mono", monospace; white-space: pre-wrap; margin: 0; }
+.log .warn { color: #fbbf24; }
+.log .error { color: #f87171; font-weight: 600; }
+.controls { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+form { display: inline-block; margin: 0; }
+button { font: inherit; font-weight: 600; padding: 0.55rem 1.1rem; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text); cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.danger { background: var(--danger-bg); border-color: var(--danger); color: var(--danger); }
+button.small { padding: 0.3rem 0.7rem; font-size: 0.8rem; }
+</style>"#;
+
 fn admin_status_page(app: &App) -> Response<Body> {
+    let sessions = app.sessions.session_count();
+    let load_pct = (sessions * 100).checked_div(app.max_sessions).unwrap_or(0).min(100);
+    let healthy = app.started_via_admin_restart || app.started_at.elapsed() > UNEXPLAINED_UPTIME_GRACE;
+
     let html = format!(
         r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>ConfluenceVoice admin</title>
 <meta http-equiv="refresh" content="{refresh_secs}">
-<style>
-body {{ font-family: system-ui, sans-serif; max-width: 40em; margin: 2em auto; padding: 0 1em; }}
-table {{ border-collapse: collapse; width: 100%; margin-bottom: 1em; }}
-th, td {{ text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid #ccc; }}
-form {{ display: inline-block; margin-right: 0.6em; }}
-button {{ padding: 0.5em 1.2em; font-size: 1em; cursor: pointer; }}
-.danger {{ background: #c0392b; color: white; border: 1px solid #a03024; }}
-.warn {{ background: #fff3cd; border: 1px solid #ffe69c; padding: 0.6em; border-radius: 4px; }}
-h2 {{ font-size: 1.1em; margin-top: 1.5em; }}
-h3 {{ font-size: 0.95em; margin: 1em 0 0.3em; color: #555; }}
-</style></head>
-<body>
-<h1>ConfluenceVoice</h1>
-<p style="color:#888; font-size:0.85em;">Auto-refreshes every {refresh_secs}s.</p>
+{ADMIN_CSS}</head>
+<body><div class="wrap">
+<header>
+<div><h1>ConfluenceVoice</h1><p class="meta">v{version} &middot; auto-refreshes every {refresh_secs}s</p></div>
+<span class="badge {status_class}"><span class="dot"></span>{status_text}</span>
+</header>
 {restart_notice}
-<table>
-<tr><th>Version</th><td>{version}</td></tr>
-<tr><th>Uptime</th><td>{uptime_secs} s</td></tr>
-<tr><th>Started via</th><td>{started_via}</td></tr>
-<tr><th>Sessions</th><td>{sessions} / {max_sessions}</td></tr>
-<tr><th>Rooms</th><td>{rooms}</td></tr>
-<tr><th>Mixer ticks skipped (lifetime)</th><td>{ticks_skipped}</td></tr>
-<tr><th>IP allow-list active</th><td>{allow_list}</td></tr>
-<tr><th>TURN configured</th><td>{turn}</td></tr>
-</table>
+<div class="grid">
+<div class="stat"><div class="label">Uptime</div><div class="value">{uptime_secs}s</div></div>
+<div class="stat"><div class="label">Sessions</div><div class="value">{sessions} / {max_sessions}</div>
+  <div class="bar"><i style="width:{load_pct}%"></i></div></div>
+<div class="stat"><div class="label">Rooms</div><div class="value">{rooms}</div></div>
+<div class="stat"><div class="label">Ticks skipped</div><div class="value">{ticks_skipped}</div></div>
+<div class="stat"><div class="label">IP allow-list</div><div class="value {allow_class}">{allow_list}</div></div>
+<div class="stat"><div class="label">TURN relay</div><div class="value {turn_class}">{turn}</div></div>
+</div>
 
-<h2>Sessions by room</h2>
-{sessions_table}
+<section><h2>Sessions by room</h2>{sessions_table}</section>
 
-<h2>Recent warnings / errors</h2>
-{log_tail}
+<section><h2>Recent warnings / errors</h2>{log_tail}</section>
 
-<h2>Controls</h2>
+<section><h2>Controls</h2><div class="controls">
 <form method="post" action="/reload" onsubmit="return confirm('Reload confluencevoice.toml now? Only the IP allow-list and TURN settings are applied live; everything else needs a restart.');">
 <button type="submit">Reload config</button>
 </form>
@@ -854,24 +941,29 @@ h3 {{ font-size: 0.95em; margin: 1em 0 0.3em; color: #555; }}
 <form method="post" action="/stop" onsubmit="return confirm('Stop ConfluenceVoice now? Voice stays down until it is started again by hand — this page cannot start it back up.');">
 <button type="submit" class="danger">Stop</button>
 </form>
-</body></html>"#,
+</div></section>
+</div></body></html>"#,
         refresh_secs = ADMIN_REFRESH_SECS,
-        restart_notice = if app.started_via_admin_restart || app.started_at.elapsed() > UNEXPLAINED_UPTIME_GRACE {
+        status_class = if healthy { "good" } else { "warn" },
+        status_text = if healthy { "Healthy" } else { "Check uptime" },
+        restart_notice = if healthy {
             String::new()
         } else {
-            "<p class=\"warn\">&#9888; Low uptime, and this process was NOT started via this \
+            "<div class=\"banner\">&#9888; Low uptime, and this process was NOT started via this \
              page's Restart button. If you did not just launch it by hand, something else \
-             (a crash, a manual relaunch) brought it back up.</p>".to_string()
+             (a crash, a manual relaunch) brought it back up.</div>".to_string()
         },
         version = env!("CARGO_PKG_VERSION"),
         uptime_secs = app.started_at.elapsed().as_secs(),
-        started_via = if app.started_via_admin_restart { "this admin page's Restart" } else { "not this page (direct launch, or a crash relaunch)" },
-        sessions = app.sessions.session_count(),
+        sessions = sessions,
         max_sessions = app.max_sessions,
+        load_pct = load_pct,
         rooms = app.sessions.rooms().len(),
         ticks_skipped = app.total_ticks_skipped.load(Ordering::Relaxed),
-        allow_list = if app.allowed_region_ips.read().is_empty() { "no" } else { "yes" },
-        turn = if app.ice_servers.read().is_empty() { "no" } else { "yes" },
+        allow_class = if app.allowed_region_ips.read().is_empty() { "warn" } else { "good" },
+        allow_list = if app.allowed_region_ips.read().is_empty() { "off" } else { "on" },
+        turn_class = if app.ice_servers.read().is_empty() { "" } else { "good" },
+        turn = if app.ice_servers.read().is_empty() { "none" } else { "configured" },
         sessions_table = sessions_table_html(app),
         log_tail = log_tail_html(),
     );
