@@ -595,17 +595,17 @@ mod tests {
         let a = session("a", "agent-a", [0.0, 0.0, 0.0]);
 
         // Never disconnected: untouched.
-        escalate_stale_disconnects(&[a.clone()], Duration::from_secs(60));
+        escalate_stale_disconnects(std::slice::from_ref(&a), Duration::from_secs(60));
         assert!(!a.closed.load(Ordering::Relaxed));
 
         // Disconnected, but well within grace.
         *a.disconnected_since.lock() = Some(Instant::now());
-        escalate_stale_disconnects(&[a.clone()], Duration::from_secs(60));
+        escalate_stale_disconnects(std::slice::from_ref(&a), Duration::from_secs(60));
         assert!(!a.closed.load(Ordering::Relaxed), "must not close before grace elapses");
 
         // Disconnected long enough ago.
         *a.disconnected_since.lock() = Some(Instant::now() - Duration::from_secs(61));
-        escalate_stale_disconnects(&[a.clone()], Duration::from_secs(60));
+        escalate_stale_disconnects(std::slice::from_ref(&a), Duration::from_secs(60));
         assert!(a.closed.load(Ordering::Relaxed), "must close once grace has elapsed");
     }
 
@@ -614,7 +614,7 @@ mod tests {
         let a = session("a", "agent-a", [0.0, 0.0, 0.0]);
         // Cleared by on_connection_state_change on reaching Connected — see session.rs.
         *a.disconnected_since.lock() = None;
-        escalate_stale_disconnects(&[a.clone()], Duration::from_secs(0));
+        escalate_stale_disconnects(std::slice::from_ref(&a), Duration::from_secs(0));
         assert!(!a.closed.load(Ordering::Relaxed), "None must never be treated as disconnected");
     }
 

@@ -527,7 +527,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 urls: cfg.turn_urls.clone(),
                 username: cfg.turn_username.clone().unwrap_or_default(),
                 credential: cfg.turn_credential.clone().unwrap_or_default(),
-                ..Default::default()
             }]
         },
         started_at: std::time::Instant::now(),
