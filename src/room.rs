@@ -128,6 +128,11 @@ impl Session {
         if let Some(primary) = m.join {
             self.joined.store(true, Ordering::Relaxed);
             self.primary.store(primary, Ordering::Relaxed);
+            log::info!(
+                "session {} agent {} join primary={primary}",
+                self.id,
+                self.agent_id
+            );
         }
 
         // Reject anything not finite before it reaches the mixer. JSON can carry
@@ -344,7 +349,16 @@ pub fn mix_room(members: &[Arc<Session>]) -> Vec<ListenerOutput> {
             // Build (and so record as announced) only when it can actually be delivered:
             // otherwise a listener whose channel opens a moment after it joins never
             // learns about the people already in the room.
-            roster: if listener.dc_open.load(Ordering::Relaxed) {
+            //
+            // The listener must also have finished its OWN join (primary for spatial):
+            // until then its viewer is still setting the session up, and a join
+            // announced to it that early can be dropped by the viewer and is never
+            // repeated. That happens whenever someone joins a room that already has
+            // people in it.
+            roster: if listener.dc_open.load(Ordering::Relaxed)
+                && listener.joined.load(Ordering::Relaxed)
+                && (listener.primary.load(Ordering::Relaxed) || !listener.spatial)
+            {
                 build_roster(listener, &frames)
             } else {
                 None
@@ -427,6 +441,27 @@ mod tests {
         s.primary.store(true, Ordering::Relaxed);
         s.dc_open.store(true, Ordering::Relaxed);
         s
+    }
+
+    #[test]
+    fn nobody_is_announced_to_a_listener_that_has_not_finished_joining() {
+        // b joins a room where a is already talking. Until b's own join (primary) has
+        // arrived, b's viewer is not ready to take announcements.
+        let a = session("a", "agent-a", [0.0, 0.0, 0.0]);
+        let b = session("b", "agent-b", [1.0, 0.0, 0.0]);
+        b.primary.store(false, Ordering::Relaxed);
+        loud(&a);
+        let out = mix_room(&[a.clone(), b.clone()]);
+        assert!(
+            out.iter().find(|o| o.session.id == "b").unwrap().roster.is_none(),
+            "no roster before b's own join is complete"
+        );
+
+        b.primary.store(true, Ordering::Relaxed);
+        loud(&a);
+        let out = mix_room(&[a.clone(), b.clone()]);
+        let r = out.iter().find(|o| o.session.id == "b").unwrap().roster.clone().unwrap();
+        assert!(r.contains("agent-a") && r.contains(r#""j""#), "a announced once b is ready: {r}");
     }
 
     #[test]

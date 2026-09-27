@@ -297,6 +297,11 @@ async fn mixer_loop(app: Arc<App>) {
                             return;
                         }
                         if let Some(roster) = out.roster {
+                            // Joins are rare; level updates arrive every 20 ms, so only joins
+                            // are logged at info.
+                            if roster.contains(r#""j""#) {
+                                log::info!("announce to {}: {roster}", out.session.id);
+                            }
                             ep.send_roster(&roster).await;
                         }
                         if let Err(e) = ep.send_mix(&out.stereo).await {
