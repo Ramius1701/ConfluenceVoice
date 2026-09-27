@@ -351,6 +351,19 @@ fn build_roster(listener: &Arc<Session>, frames: &[(Arc<Session>, Option<Vec<f32
     for (speaker, _) in frames {
         // Report every participant including the listener: the viewer keys its own
         // participant list off these ids and shows its own dot from them too.
+        //
+        // Do not announce anyone until their own join is complete. Firestorm sends a
+        // first join WITHOUT "p" and a second one with "p":true once its connection is
+        // up (llvoicewebrtc.cpp sendJoin / SESSION_UP). A viewer only adds a participant
+        // from a spatial join that carries "p":true, so announcing on the first join —
+        // and never again — leaves that person permanently missing from the listener's
+        // list, and with no entry there is no speaking dot above their avatar.
+        let ready = speaker.joined.load(Ordering::Relaxed)
+            && (speaker.primary.load(Ordering::Relaxed) || !speaker.spatial);
+        if !ready {
+            continue;
+        }
+
         let level = speaker.level.load(Ordering::Relaxed);
         let joined = listener.mark_announced(&speaker.agent_id);
         let speaking =
@@ -398,7 +411,31 @@ mod tests {
             st.listener_pos = pos;
             st.known = true;
         }
+        // A fully joined viewer: announced its join with "p":true.
+        s.joined.store(true, Ordering::Relaxed);
+        s.primary.store(true, Ordering::Relaxed);
         s
+    }
+
+    #[test]
+    fn join_is_announced_only_once_the_speaker_is_primary() {
+        // Firestorm's real order: first join has no "p", the second has "p":true.
+        let a = session("a", "agent-a", [0.0, 0.0, 0.0]);
+        let b = session("b", "agent-b", [1.0, 0.0, 0.0]);
+        b.primary.store(false, Ordering::Relaxed); // first join, no "p" yet
+        loud(&b);
+
+        let out = mix_room(&[a.clone(), b.clone()]);
+        let r = out.iter().find(|o| o.session.id == "a").unwrap().roster.clone().unwrap_or_default();
+        assert!(!r.contains("agent-b"), "must not announce b before it is primary: {r}");
+
+        // b's second join arrives, carrying "p":true.
+        b.primary.store(true, Ordering::Relaxed);
+        loud(&b);
+        let out = mix_room(&[a.clone(), b.clone()]);
+        let r = out.iter().find(|o| o.session.id == "a").unwrap().roster.clone().unwrap();
+        assert!(r.contains("agent-b"), "b must be announced once primary: {r}");
+        assert!(r.contains(r#""j":{"p":true}"#), "join must carry p:true: {r}");
     }
 
     fn loud(s: &Arc<Session>) {
