@@ -27,6 +27,7 @@ date and viewer version beside it.
 - [x] Region provisions a viewer and the peer connection connects (2026-09-27, Firestorm 7.2.5)
 - [x] `SLData` data channel opens (2026-09-27, Firestorm 7.2.5)
 - [ ] Reconnects after a viewer relog, and after the region restarts
+- [ ] **Reconnects on its own after a ConfluenceVoice restart, with no viewer action** — wolfvoice's own `docs/SERVER.md` claims "viewers re-provision automatically within a few seconds." Every restart tonight (2026-09-27) needed a manual relog or a voice toggle from both testers; nobody waited without touching anything first, so this is genuinely untested, not confirmed broken. Leading theory: specific to a mixed Vivox/WebRTC/ThinkVox grid (see "Mixed grids" below), not a general failure — try this on the next restart before assuming either way.
 - [ ] Session is removed when the viewer logs out (check `sessions` on `https://host:9443/`)
 - [ ] Voice connects from a viewer **outside** your network (needs `public_ip` and UDP 40000-40999 forwarded)
 - [ ] Voice works from a viewer on a network that blocks outbound UDP (expected to fail: no TURN)
@@ -109,6 +110,15 @@ whatever was causing the mixer to miss its deadline — this wasn't a CPU-throug
 at all. One tick still gets skipped at this tier even after the fix; the cause of that
 one has not been investigated.
 
+**A session count multiplier to plan around, from wolfvoice's own `docs/SERVER.md`:**
+Firestorm opens a WebRTC connection to *every* WebRTC-enabled region it can currently
+hear, not just the one you're standing in — it probes eight compass directions at twice
+the 50 m audio range, so one viewer near a region corner can hold up to **four**
+simultaneous sessions. With Sandbox as the only WebRTC region on Casperia this doesn't
+bite yet, but `max_sessions` and the media port range need to budget for this multiplier
+the moment a second WebRTC region exists nearby — capacity is per-viewer-near-a-border,
+not per-viewer.
+
 ## Problems found, and what fixed them
 
 ### Mic button greyed out in Firestorm 7.2.4+
@@ -143,9 +153,20 @@ Cause, from the viewer log and the Firestorm source (`llvoicevivox.cpp`,
 Not yet tested: the reverse direction (arriving in a WebRTC region from a Vivox region and
 toggling voice).
 
-Lasting fix, region side (not done): make the WebRTC module answer Vivox-style requests in a
-way that does not kill the viewer's Vivox client, for example by handing them to the Vivox
-module. Stock viewers cannot be changed, so this has to be fixed in the region.
+**Not the same thing as wolfvoice's own "Firestorm uses Vivox even though the region says
+webrtc" troubleshooting entry.** Their doc describes the same `{"voice_server_type":"vivox"}`
+request as usually harmless noise from Firestorm's dual-provider startup — look for a second,
+`jsep`-carrying request to confirm WebRTC actually worked. That's a narrower claim (is voice
+working *on this one region right now*) and doesn't cover what happens afterward. It neither
+confirms nor contradicts the session-wide `giveUp` finding above; they're answering different
+questions, not disagreeing.
+
+Lasting fix, region side: **done on Casperia's Sandbox region** (not upstreamed to
+ConfluenceVoice or `os-webrtc-janus` generally) — the WebRTC module now hands Vivox-type
+requests to the Vivox module instead of failing them, so the viewer's Vivox client gets real
+credentials and never calls `giveUp`. Confirmed live: the region log shows a real Vivox admin
+connection established, not the rejection above. Stock viewers cannot be changed, so this had
+to be fixed region-side.
 
 ### Voice never connects after teleporting through Vivox regions
 Symptom: the region log shows `voice_server_type is not 'webrtc'` for requests of type
@@ -169,6 +190,23 @@ OpenSim's outbound HTTPS defaults to `NoVerifyCertChain = true` and
 `NoVerifyCertHostname = true`, so the region's connector accepts a self-signed
 ConfluenceVoice certificate. Use a CA-issued certificate for anything reachable from the
 internet.
+
+### Firestorm: "unable to connect to the voice server: www.bhr.vivox.com" — not a bug
+Not seen directly this session, but documented in wolfvoice's own `docs/TROUBLESHOOTING.md`
+and worth knowing before it causes alarm: opening **Preferences → Sound & Media → Voice →
+Audio Device Settings** makes Firestorm call `tuningStart()` on *both* voice modules
+unconditionally, regardless of which one the region actually uses. The Vivox one launches a
+doomed login to Vivox's own servers and eventually raises this alert. WebRTC voice can be
+working perfectly at the same time — it's specific to that one settings panel, not a sign
+anything is broken.
+
+### "Only some participants hear each other" — check the parcel voice channel, not the code
+Also from wolfvoice's docs, not yet hit directly here. Spatial rooms are keyed on region +
+parcel, so two people on different parcels of the same region are in different rooms —
+correct behaviour when a parcel has its own voice channel rather than using the estate-wide
+one. Whether a parcel does depends on its `PF_USE_ESTATE_VOICE_CHAN` flag (bit 30). If
+everyone should be sharing one channel and isn't, check that flag before suspecting a
+ConfluenceVoice or room-keying problem.
 
 ## Reading the logs
 

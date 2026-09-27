@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    env:
+      # See release.yml and docs/TESTING.md for why this is needed on Windows: the
+      # opus crate vendors libopus, whose CMakeLists.txt still declares
+      # cmake_minimum_required(VERSION 3.1), which CMake 4 (what windows-latest
+      # ships) refuses outright. This is CMake's own documented escape hatch.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Covers the two halves that need no network or live server: the wire
+      # protocol parsers, and the spatial mixer (including the per-listener
+      # separation that is the whole point of the service).
+      - name: Test
+        run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Build examples
+        run: cargo build --locked --examples
