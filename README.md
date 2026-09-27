@@ -22,6 +22,20 @@ OpenSimulator that has the `os-webrtc-janus` addon (upstream OpenSim and OpenSim
 include it; older trees can add it). The name comes from the Confluence grid where it
 was developed and first tested.
 
+**Free and self-hosted** is the actual difference from the alternatives, not just a
+preference. wolfvoice is the same idea but needs Linux, Docker or WSL. ThinkVox is a
+hosted service: free for 10 concurrent users, then priced per tier ($19/mo for 50,
+$49/mo for 200, $149/mo for 1,000, per their site). Vivox needs no server of your own
+either, but it's the thing running out — see above. ConfluenceVoice costs only your own
+hardware and bandwidth, with no account, no per-user pricing and no external service in
+the voice path, at the cost of running and maintaining it yourself.
+
+**Best on a grid where every region speaks WebRTC.** That's the configuration this
+project tests against, and where the checklist in [docs/TESTING.md](docs/TESTING.md) is
+being filled in. A grid that mixes WebRTC with Vivox or ThinkVox regions works too, but
+hits a real Firestorm quirk — see "Known limitations" below — that a single-voice-system
+grid never encounters.
+
 ConfluenceVoice is an independent project, derived from
 [wolfvoice](https://github.com/intelligentwolf/wolfvoice) by Wolf Software Systems
 Ltd, which is used as a donor of code and ideas — this is not a GitHub fork and
@@ -238,8 +252,12 @@ service).
 **Mixed grids.** On a grid that runs WebRTC regions next to Vivox or ThinkVox regions,
 Firestorm's Vivox client can stop for the rest of the session after visiting a WebRTC
 region, so voice fails in the Vivox regions until voice is toggled off and on in
-Preferences → Sound & Media → Voice (no relog needed). Details and the region-side fix
-under consideration are in [docs/TESTING.md](docs/TESTING.md).
+Preferences → Sound & Media → Voice (no relog needed). This is a Firestorm behaviour,
+not something ConfluenceVoice can fix on its own — a region-side workaround (letting the
+region's Vivox and WebRTC modules answer requests together) has been tried on one grid's
+`os-webrtc-janus` build, not upstreamed here yet. A grid running WebRTC only, with no
+Vivox or ThinkVox regions, does not hit this. Details in
+[docs/TESTING.md](docs/TESTING.md).
 
 Same as upstream:
 
