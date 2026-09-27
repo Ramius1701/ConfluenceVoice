@@ -77,6 +77,32 @@ advertised `VoiceStunServers`, which the viewer ignores. The fix is region-side:
 hardcoded list; the OpenSim-Confluence build derives it from the `StunServers` setting
 and adds the `stun:` prefix.
 
+### Mixed grids: voice dies in Vivox or ThinkVox regions after visiting a WebRTC region
+Symptom: after being in a WebRTC region (Sandbox), voice stops working in every Vivox or
+ThinkVox region until the viewer is relogged. Seen 2026-09-27 on Firestorm 7.2.5.
+
+Cause, from the viewer log and the Firestorm source (`llvoicevivox.cpp`,
+`provisionVoiceAccount` and `giveUp`):
+1. At login Firestorm starts its **Vivox** client before it knows which voice system the
+   region uses.
+2. That client asks the region for a Vivox voice account. A WebRTC region answers
+   "voice_server_type is not 'webrtc'" as a failed response.
+3. Firestorm treats any failed answer as fatal: the log shows `Unable to provision voice
+   account`, then `giveUp : Terminating Voice Service`. The Vivox client stops for the rest
+   of the session.
+4. It only restarts when voice is switched off and on, or at the next login. Vivox and
+   ThinkVox regions (ThinkVox also runs through the Vivox client) then have no client.
+
+**Workaround, no relog (tested 2026-09-27):** Preferences → Sound & Media → Voice, untick
+"Enable voice chat", OK, tick it again, OK.
+
+Not yet tested: the reverse direction (arriving in a WebRTC region from a Vivox region and
+toggling voice).
+
+Lasting fix, region side (not done): make the WebRTC module answer Vivox-style requests in a
+way that does not kill the viewer's Vivox client, for example by handing them to the Vivox
+module. Stock viewers cannot be changed, so this has to be fixed in the region.
+
 ### Voice never connects after teleporting through Vivox regions
 Symptom: the region log shows `voice_server_type is not 'webrtc'` for requests of type
 `vivox`. Firestorm switches to its Vivox client when it enters a region that

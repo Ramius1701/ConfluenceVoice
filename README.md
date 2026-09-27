@@ -235,6 +235,12 @@ service).
 
 ## Known limitations
 
+**Mixed grids.** On a grid that runs WebRTC regions next to Vivox or ThinkVox regions,
+Firestorm's Vivox client can stop for the rest of the session after visiting a WebRTC
+region, so voice fails in the Vivox regions until voice is toggled off and on in
+Preferences → Sound & Media → Voice (no relog needed). Details and the region-side fix
+under consideration are in [docs/TESTING.md](docs/TESTING.md).
+
 Same as upstream:
 
 - **No TURN, and no way to add one.** Firestorm hardcodes its STUN servers to
