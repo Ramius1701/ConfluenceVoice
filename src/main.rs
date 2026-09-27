@@ -63,6 +63,11 @@ struct App {
     /// Built once from config and handed to every session — see config.rs's
     /// turn_urls/turn_username/turn_credential.
     ice_servers: Vec<rtc::peer_connection::configuration::RTCIceServer>,
+    started_at: std::time::Instant,
+    /// Cumulative mixer ticks skipped to an overload, since startup. mixer_loop's own
+    /// 10s log warning tracks a separate, resetting count for its own rate-limiting —
+    /// this one only ever grows, so the status endpoint can show a real lifetime total.
+    total_ticks_skipped: std::sync::atomic::AtomicU64,
 }
 
 impl App {
@@ -252,6 +257,7 @@ async fn mixer_loop(app: Arc<App>) {
 
         if inflight.load(Ordering::Acquire) != 0 {
             skipped += 1;
+            app.total_ticks_skipped.fetch_add(1, Ordering::Relaxed);
             // Rate-limit the complaint; at 50 ticks a second an unthrottled log
             // would itself become the bottleneck.
             if last_warned.elapsed() >= Duration::from_secs(10) {
@@ -353,10 +359,20 @@ async fn mixer_loop(app: Arc<App>) {
 async fn handle(app: Arc<App>, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
     // A tiny health endpoint, reachable only from the allow-listed region hosts.
     if req.method() == Method::GET {
+        // Reachable only from wherever allowed_region_ips (if set) permits — the same
+        // TCP-accept-time check covers this endpoint too, not just POST — so exposing
+        // configuration shape (not secrets or the list contents themselves) here is no
+        // worse than console access already implies.
         let body = json!({
             "service": "confluencevoice",
+            "version": env!("CARGO_PKG_VERSION"),
+            "uptime_secs": app.started_at.elapsed().as_secs(),
             "sessions": app.sessions.session_count(),
+            "max_sessions": app.max_sessions,
             "rooms": app.sessions.rooms().len(),
+            "mixer_ticks_skipped_total": app.total_ticks_skipped.load(Ordering::Relaxed),
+            "ip_allow_list_active": !app.allowed_region_ips.is_empty(),
+            "turn_configured": !app.ice_servers.is_empty(),
         });
         return Ok(Response::builder()
             .status(StatusCode::OK)
@@ -514,6 +530,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             }]
         },
+        started_at: std::time::Instant::now(),
+        total_ticks_skipped: std::sync::atomic::AtomicU64::new(0),
     });
 
     if cfg.allowed_region_ips.is_empty() {
