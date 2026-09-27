@@ -46,6 +46,7 @@ struct App {
     endpoints: RwLock<HashMap<String, Arc<Endpoint>>>,
     ports: PortPool,
     public_ip: String,
+    bind_ip: Option<String>,
     max_sessions: usize,
     runtime: Arc<dyn webrtc::runtime::Runtime>,
 }
@@ -169,6 +170,7 @@ impl App {
             sess.clone(),
             offer,
             &self.public_ip,
+            self.bind_ip.as_deref(),
             port,
             self.runtime.clone(),
         )
@@ -463,6 +465,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         endpoints: RwLock::new(HashMap::new()),
         ports: PortPool::new(cfg.media_port_lo, cfg.media_port_hi),
         public_ip: cfg.public_ip.clone(),
+        bind_ip: cfg.bind_ip.clone(),
         max_sessions: cfg.max_sessions,
         runtime: Arc::new(webrtc::runtime::TokioRuntime),
     });
@@ -474,12 +477,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = cfg.rpc_bind.parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    log::info!(
-        "confluencevoice listening on {addr} (TLS), media {}-{}/udp on {}",
-        cfg.media_port_lo,
-        cfg.media_port_hi,
-        cfg.public_ip
-    );
+    match &cfg.bind_ip {
+        Some(bind) => log::info!(
+            "confluencevoice listening on {addr} (TLS), media {}-{}/udp bound on {bind}, advertised as {}",
+            cfg.media_port_lo,
+            cfg.media_port_hi,
+            cfg.public_ip
+        ),
+        None => log::info!(
+            "confluencevoice listening on {addr} (TLS), media {}-{}/udp on {}",
+            cfg.media_port_lo,
+            cfg.media_port_hi,
+            cfg.public_ip
+        ),
+    }
 
     loop {
         let (stream, peer) = match listener.accept().await {

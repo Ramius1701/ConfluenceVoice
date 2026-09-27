@@ -92,6 +92,8 @@ pub struct Endpoint {
     encoder: Mutex<opus::Encoder>,
     /// RTP timestamp for the outbound stream, advanced by FRAME_SAMPLES per frame.
     packet_timestamp: Mutex<u32>,
+    /// The answer SDP returned to the viewer, including any public-address candidates.
+    answer: String,
 }
 
 impl Endpoint {
@@ -312,6 +314,7 @@ pub async fn establish(
     session: Arc<Session>,
     offer_sdp: &str,
     public_ip: &str,
+    bind_ip: Option<&str>,
     port: u16,
     runtime: Arc<dyn Runtime>,
 ) -> Result<Endpoint, String> {
@@ -371,13 +374,18 @@ pub async fn establish(
         .map_err(|e| format!("TrackLocalStaticSample: {e}"))?,
     );
 
+    // Bind where the machine really has an address; advertise the public one. With no
+    // bind_ip they are the same (public address attached directly, e.g. a VPS). Behind
+    // NAT they differ, and the public address is added to the answer below.
+    let bind_addr = bind_ip.unwrap_or(public_ip);
+
     let pc = PeerConnectionBuilder::new()
         .with_configuration(config)
         .with_media_engine(media_engine)
         .with_interceptor_registry(registry)
         .with_handler(handler)
         .with_runtime(runtime)
-        .with_udp_addrs(vec![format!("{public_ip}:{port}")])
+        .with_udp_addrs(vec![format!("{bind_addr}:{port}")])
         .build()
         .await
         .map_err(|e| format!("peer connection build: {e}"))?;
@@ -451,6 +459,26 @@ pub async fn establish(
         );
     }
 
+    // Behind NAT the library only knows the local address. Add the public one to what
+    // we hand back, keeping the local host candidate so viewers on the same network
+    // still connect directly. (The library's own nat_1to1 setting is never applied in
+    // this version, so it cannot do this for us.)
+    let answer = if bind_addr != public_ip {
+        add_public_candidates(&local.sdp, public_ip)
+    } else {
+        local.sdp.clone()
+    };
+
+    let advertised: Vec<String> = answer
+        .lines()
+        .filter(|l| l.starts_with("a=candidate:"))
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            (f.len() > 7).then(|| format!("{}:{}/{}", f[4], f[5], f[7]))
+        })
+        .collect();
+    log::info!("session {} advertises {}", session.id, advertised.join(", "));
+
     let out_pt = negotiated_opus_pt(&local.sdp).unwrap_or(OPUS_PT_PREFERRED);
 
     let encoder = opus::Encoder::new(
@@ -471,12 +499,42 @@ pub async fn establish(
         dc: dc_slot,
         encoder: Mutex::new(encoder),
         packet_timestamp: Mutex::new(rand_u32()),
+        answer,
     })
 }
 
 /// Return the SDP we answered with, for handing back to the viewer.
 pub async fn answer_sdp(ep: &Endpoint) -> Option<String> {
-    ep.pc.local_description().await.map(|d| d.sdp)
+    Some(ep.answer.clone())
+}
+
+/// After every UDP host candidate, add a server-reflexive candidate with the same port
+/// but the public address. Used when the machine sits behind a router that forwards
+/// the media port range to it.
+fn add_public_candidates(sdp: &str, public_ip: &str) -> String {
+    let mut out = String::with_capacity(sdp.len() + 256);
+    let mut n = 0u32;
+    for line in sdp.split_inclusive('\n') {
+        out.push_str(line);
+        let trimmed = line.trim_end();
+        let Some(rest) = trimmed.strip_prefix("a=candidate:") else {
+            continue;
+        };
+        // foundation component protocol priority address port "typ" type
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        if f.len() < 8 || !f[2].eq_ignore_ascii_case("udp") || f[6] != "typ" || f[7] != "host" {
+            continue;
+        }
+        if line.len() == trimmed.len() {
+            out.push_str("\r\n"); // last line had no terminator
+        }
+        n += 1;
+        out.push_str(&format!(
+            "a=candidate:pub{n} {} udp 1694498815 {public_ip} {} typ srflx raddr {} rport {}\r\n",
+            f[1], f[5], f[4], f[5]
+        ));
+    }
+    out
 }
 
 /// Small non-cryptographic random source for SSRCs and RTP start timestamps.
@@ -530,6 +588,21 @@ mod tests {
         }
         // It must actually cycle rather than return one port forever.
         assert!(seen.iter().any(|p| *p != seen[0]));
+    }
+
+    #[test]
+    fn public_candidate_is_added_after_each_udp_host_candidate() {
+        let sdp = "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
+                   a=candidate:1 1 udp 2130706431 192.168.88.14 41000 typ host\r\n\
+                   a=candidate:2 1 tcp 1 192.168.88.14 9 typ host tcptype active\r\n\
+                   a=end-of-candidates\r\n";
+        let out = add_public_candidates(sdp, "203.0.113.7");
+        assert!(out.contains(
+            "a=candidate:pub1 1 udp 1694498815 203.0.113.7 41000 typ srflx raddr 192.168.88.14 rport 41000\r\n"
+        ));
+        assert!(out.contains("a=candidate:1 1 udp 2130706431 192.168.88.14 41000 typ host"));
+        assert_eq!(out.matches("typ srflx").count(), 1, "tcp candidate is not mirrored");
+        assert!(out.ends_with("a=end-of-candidates\r\n"));
     }
 
     #[test]

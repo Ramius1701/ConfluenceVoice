@@ -21,6 +21,13 @@ pub struct Config {
     /// answer.
     pub public_ip: String,
 
+    /// Local address the media UDP sockets bind to. Unset means "bind to
+    /// public_ip", which is right when the public address is attached to this
+    /// machine (a VPS). Behind a router (NAT) the public address is not on any
+    /// local network card, so set this to the machine's LAN address: sockets bind
+    /// there and public_ip is advertised to viewers as well.
+    pub bind_ip: Option<String>,
+
     /// Where the JSON-RPC listener binds. TLS only, deliberately: the SDP carries
     /// this server's DTLS fingerprint, so an attacker able to rewrite signalling in
     /// flight could substitute their own and become the media endpoint. Restrict
@@ -47,6 +54,7 @@ pub struct Config {
 #[derive(Deserialize, Default)]
 struct RawConfig {
     public_ip: Option<String>,
+    bind_ip: Option<String>,
     rpc_bind: Option<String>,
     media_port_lo: Option<u16>,
     media_port_hi: Option<u16>,
@@ -75,6 +83,13 @@ const TEMPLATE: &str = r#"# ConfluenceVoice configuration.
 # it as-is. Behind 1:1 NAT, use the PUBLIC address and forward the media port
 # range (below) to this machine.
 public_ip = ""
+
+# OPTIONAL. Only for machines BEHIND A ROUTER (home or office NAT): the address of
+# this machine on your own network, e.g. "192.168.1.20". Voice sockets bind here,
+# while public_ip above is what viewers outside your network are told to use. Viewers
+# on your own network keep using this address directly. Leave it commented out on a
+# server that has its public address attached directly.
+# bind_ip = "192.168.1.20"
 
 # Where the JSON-RPC/TLS listener binds. Restrict this port to your region
 # hosts at the firewall — it has no authentication of its own.
@@ -146,6 +161,10 @@ impl Config {
 
         Ok(Config {
             public_ip,
+            bind_ip: raw
+                .bind_ip
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             rpc_bind: raw.rpc_bind.unwrap_or_else(|| DEFAULT_RPC_BIND.to_string()),
             media_port_lo,
             media_port_hi,
