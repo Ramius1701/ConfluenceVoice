@@ -34,6 +34,16 @@ pub enum RoomKey {
     MultiAgent { channel: String },
 }
 
+impl std::fmt::Display for RoomKey {
+    /// Used by the admin page's session list — see main.rs's sessions_table_html.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RoomKey::Spatial { region, parcel } => write!(f, "{region} (parcel {parcel})"),
+            RoomKey::MultiAgent { channel } => write!(f, "multiagent {channel}"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SpatialState {
     pub avatar_pos: [f64; 3],
@@ -67,6 +77,10 @@ pub struct Session {
     pub agent_id: String,
     pub room: RoomKey,
     pub spatial: bool,
+    /// When this session was created. Read only by the admin page's session list
+    /// (main.rs's sessions_table_html) to show how long each participant has been
+    /// connected — nothing on the mixer path depends on it.
+    pub created_at: Instant,
 
     pub state: RwLock<SpatialState>,
     /// Listener-chosen gain per speaker, already converted out of the viewer's
@@ -103,6 +117,7 @@ impl Session {
             agent_id,
             room,
             spatial,
+            created_at: Instant::now(),
             state: RwLock::new(SpatialState::identity()),
             gains: RwLock::new(HashMap::new()),
             mutes: RwLock::new(HashMap::new()),
@@ -277,6 +292,13 @@ impl Registry {
 
     pub fn session_count(&self) -> usize {
         self.by_session.read().len()
+    }
+
+    /// Every live session, in no particular order. Used by the admin page's session
+    /// list (main.rs's sessions_table_html) — nothing on the mixer path needs this,
+    /// which iterates room-by-room via `members` instead.
+    pub fn all(&self) -> Vec<Arc<Session>> {
+        self.by_session.read().values().cloned().collect()
     }
 }
 

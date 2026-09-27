@@ -203,10 +203,14 @@ After that:
    not yet a standalone script), automatic public-IP detection, and a Vivox-to-WebRTC
    migration guide for grids that mix both.
 5. **Reliability.** Done: a status endpoint (`GET /`) reporting version, uptime, session
-   counts, cumulative skipped-tick count, and whether auth/TURN are configured; and config
+   counts, cumulative skipped-tick count, and whether auth/TURN are configured; config
    validation that rejects bad IP entries and incomplete TURN setup at startup with a
-   clear message. Still open: log to a file with rotation, certificate reload without a
-   restart, and a documented Task Scheduler or NSSM recipe for starting on boot.
+   clear message; and a local admin page (`admin_bind` in `confluencevoice.toml`,
+   loopback-only by default) with a live status view and Stop/Restart controls. Still
+   open: a TLS certificate expiry warning on the status/admin page (so a lapsed cert
+   doesn't silently take voice down), log to a file with rotation, certificate reload
+   without a restart, and a documented Task Scheduler or NSSM recipe for starting on
+   boot.
 6. **Distribution and trust.** Done: automated Windows builds and tests on every push
    ([ci.yml](.github/workflows/ci.yml)), and a release workflow
    ([release.yml](.github/workflows/release.yml)) that builds, packages and publishes a

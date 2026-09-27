@@ -58,11 +58,14 @@ struct App {
     bind_ip: Option<String>,
     max_sessions: usize,
     runtime: Arc<dyn webrtc::runtime::Runtime>,
-    /// Empty means accept from anywhere (the previous, only, behaviour).
-    allowed_region_ips: Vec<IpAddr>,
-    /// Built once from config and handed to every session — see config.rs's
-    /// turn_urls/turn_username/turn_credential.
-    ice_servers: Vec<rtc::peer_connection::configuration::RTCIceServer>,
+    /// Empty means accept from anywhere (the previous, only, behaviour). An RwLock
+    /// rather than a plain Vec so the admin page's /reload can swap this live —
+    /// see admin_handle — without restarting and dropping every connected session.
+    allowed_region_ips: RwLock<Vec<IpAddr>>,
+    /// Handed to every new session at provision time — see config.rs's
+    /// turn_urls/turn_username/turn_credential. Also reloadable via /reload; see
+    /// allowed_region_ips above for why this is an RwLock and not a plain Vec.
+    ice_servers: RwLock<Vec<rtc::peer_connection::configuration::RTCIceServer>>,
     started_at: std::time::Instant,
     /// Cumulative mixer ticks skipped to an overload, since startup. mixer_loop's own
     /// 10s log warning tracks a separate, resetting count for its own rate-limiting —
@@ -185,6 +188,12 @@ impl App {
         ));
 
         let port = self.ports.take();
+        // Read the guard's contents out to an owned Vec on its own statement, rather
+        // than inline in the call below: a guard borrowed inline as part of a larger
+        // expression lives until the end of that statement, which would otherwise
+        // hold this non-Send RwLockReadGuard across the .await and make this whole
+        // async fn's future not Send.
+        let ice_servers = self.ice_servers.read().clone();
         let ep = session::establish(
             sess.clone(),
             offer,
@@ -192,7 +201,7 @@ impl App {
             self.bind_ip.as_deref(),
             port,
             self.runtime.clone(),
-            self.ice_servers.clone(),
+            ice_servers,
         )
         .await?;
 
@@ -371,8 +380,8 @@ async fn handle(app: Arc<App>, req: Request<Body>) -> Result<Response<Body>, hyp
             "max_sessions": app.max_sessions,
             "rooms": app.sessions.rooms().len(),
             "mixer_ticks_skipped_total": app.total_ticks_skipped.load(Ordering::Relaxed),
-            "ip_allow_list_active": !app.allowed_region_ips.is_empty(),
-            "turn_configured": !app.ice_servers.is_empty(),
+            "ip_allow_list_active": !app.allowed_region_ips.read().is_empty(),
+            "turn_configured": !app.ice_servers.read().is_empty(),
         });
         return Ok(Response::builder()
             .status(StatusCode::OK)
@@ -598,12 +607,64 @@ async fn admin_handle(app: Arc<App>, req: Request<Body>) -> Result<Response<Body
             admin_exit_shortly();
             admin_plain_response("Restarting. Reload this page in a few seconds.")
         }
+        (&Method::POST, "/kick") => match query_param(req.uri(), "id") {
+            Some(id) => {
+                log::warn!("admin: kick requested for session {id}");
+                app.drop_session(&id).await;
+                admin_redirect_to_root()
+            }
+            None => Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::from("missing id"))
+                .unwrap(),
+        },
+        (&Method::POST, "/reload") => match Config::load() {
+            Ok(cfg) => {
+                let ip_count = cfg.allowed_region_ips.len();
+                let turn_on = !cfg.turn_urls.is_empty();
+                *app.allowed_region_ips.write() = cfg.allowed_region_ips;
+                *app.ice_servers.write() = build_ice_servers(&cfg.turn_urls, cfg.turn_username, cfg.turn_credential);
+                log::warn!(
+                    "admin: config reloaded — allow-list {} address(es), TURN {}",
+                    ip_count,
+                    if turn_on { "configured" } else { "not configured" }
+                );
+                admin_plain_response(
+                    "Reloaded confluencevoice.toml. Only the IP allow-list and TURN settings \
+                     were applied live — everything else needs a restart to take effect.",
+                )
+            }
+            Err(e) => {
+                log::error!("admin: reload failed, nothing was changed: {e}");
+                admin_plain_response(&format!(
+                    "Reload failed, nothing was changed:<br><pre>{}</pre>",
+                    html_escape(&e)
+                ))
+            }
+        },
         _ => Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::empty())
             .unwrap(),
     };
     Ok(resp)
+}
+
+/// Reads one query-string parameter from a request URI. Our own session ids
+/// (`cv-<uuid>`) never need percent-decoding, so this stays deliberately simple.
+fn query_param(uri: &hyper::Uri, key: &str) -> Option<String> {
+    uri.query()?.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+fn admin_redirect_to_root() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("location", "/")
+        .body(Body::empty())
+        .unwrap()
 }
 
 /// Exits the process shortly after this call returns, not immediately: the caller
@@ -614,6 +675,90 @@ fn admin_exit_shortly() {
         tokio::time::sleep(Duration::from_millis(300)).await;
         std::process::exit(0);
     });
+}
+
+/// Builds the ICE-server list handed to viewers from a loaded config's TURN fields.
+/// Shared between startup and admin_handle's /reload so both apply the same rule:
+/// no turn_urls means no relay offered at all.
+fn build_ice_servers(
+    turn_urls: &[String],
+    turn_username: Option<String>,
+    turn_credential: Option<String>,
+) -> Vec<rtc::peer_connection::configuration::RTCIceServer> {
+    if turn_urls.is_empty() {
+        Vec::new()
+    } else {
+        vec![rtc::peer_connection::configuration::RTCIceServer {
+            urls: turn_urls.to_vec(),
+            username: turn_username.unwrap_or_default(),
+            credential: turn_credential.unwrap_or_default(),
+        }]
+    }
+}
+
+/// Escapes the handful of characters that matter in HTML text content. Used for
+/// anything on the admin page that ultimately came from the network (agent ids,
+/// room names, log message text) rather than a literal we wrote ourselves.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// First 8 characters of the UUID half of a session id, for a compact admin-page
+/// column — the full id is still what /kick's query string carries.
+fn short_id(id: &str) -> &str {
+    id.strip_prefix("cv-").and_then(|s| s.get(..8)).unwrap_or(id)
+}
+
+/// Renders the live session list for the admin page, one row per participant with
+/// a Kick button that calls /kick — see admin_handle. Not gated on anything the
+/// mixer needs; room::Registry::all exists purely for this.
+fn sessions_table_html(app: &App) -> String {
+    let mut sessions = app.sessions.all();
+    sessions.sort_by_key(|s| s.created_at);
+    if sessions.is_empty() {
+        return "<p>No active sessions.</p>".to_string();
+    }
+    let mut html = String::from(
+        "<table><tr><th>Agent</th><th>Session</th><th>Room</th><th>Type</th>\
+         <th>Joined</th><th>Channel</th><th>Connected</th><th></th></tr>",
+    );
+    for s in &sessions {
+        html.push_str(&format!(
+            "<tr><td>{agent}</td><td><code>{sid}</code></td><td>{room}</td><td>{kind}</td>\
+             <td>{joined}</td><td>{dc}</td><td>{secs} s</td><td>\
+             <form method=\"post\" action=\"/kick?id={id}\" \
+             onsubmit=\"return confirm('Disconnect {agent}? They will need to reconnect.');\">\
+             <button type=\"submit\" class=\"danger\">Kick</button></form></td></tr>",
+            agent = html_escape(&s.agent_id),
+            sid = short_id(&s.id),
+            room = html_escape(&s.room.to_string()),
+            kind = if s.spatial { "spatial" } else { "multiagent" },
+            joined = if s.joined.load(Ordering::Relaxed) { "yes" } else { "no" },
+            dc = if s.dc_open.load(Ordering::Relaxed) { "yes" } else { "no" },
+            secs = s.created_at.elapsed().as_secs(),
+            id = s.id,
+        ));
+    }
+    html.push_str("</table>");
+    html
+}
+
+/// Renders the recent-warnings-and-errors panel — see LOG_RING / RingLogger below.
+fn log_tail_html() -> String {
+    let lines = recent_log_lines();
+    if lines.is_empty() {
+        return "<p>No warnings or errors since startup.</p>".to_string();
+    }
+    let body = lines
+        .iter()
+        .map(|l| html_escape(l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "<pre style=\"max-height:16em; overflow:auto; background:#f4f4f4; \
+         padding:0.6em; border:1px solid #ccc; white-space:pre-wrap; \
+         font-size:0.85em;\">{body}</pre>"
+    )
 }
 
 fn admin_plain_response(msg: &str) -> Response<Body> {
@@ -632,12 +777,13 @@ fn admin_status_page(app: &App) -> Response<Body> {
         r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>ConfluenceVoice admin</title>
 <style>
-body {{ font-family: system-ui, sans-serif; max-width: 32em; margin: 2em auto; padding: 0 1em; }}
+body {{ font-family: system-ui, sans-serif; max-width: 40em; margin: 2em auto; padding: 0 1em; }}
 table {{ border-collapse: collapse; width: 100%; margin-bottom: 1.5em; }}
 th, td {{ text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid #ccc; }}
 form {{ display: inline-block; margin-right: 0.6em; }}
 button {{ padding: 0.5em 1.2em; font-size: 1em; cursor: pointer; }}
 .danger {{ background: #c0392b; color: white; border: 1px solid #a03024; }}
+h2 {{ font-size: 1.1em; margin-top: 1.5em; }}
 </style></head>
 <body>
 <h1>ConfluenceVoice</h1>
@@ -650,6 +796,17 @@ button {{ padding: 0.5em 1.2em; font-size: 1em; cursor: pointer; }}
 <tr><th>IP allow-list active</th><td>{allow_list}</td></tr>
 <tr><th>TURN configured</th><td>{turn}</td></tr>
 </table>
+
+<h2>Sessions</h2>
+{sessions_table}
+
+<h2>Recent warnings / errors</h2>
+{log_tail}
+
+<h2>Controls</h2>
+<form method="post" action="/reload" onsubmit="return confirm('Reload confluencevoice.toml now? Only the IP allow-list and TURN settings are applied live; everything else needs a restart.');">
+<button type="submit">Reload config</button>
+</form>
 <form method="post" action="/restart" onsubmit="return confirm('Restart ConfluenceVoice now? Everyone connected will need to reconnect.');">
 <button type="submit">Restart</button>
 </form>
@@ -663,8 +820,10 @@ button {{ padding: 0.5em 1.2em; font-size: 1em; cursor: pointer; }}
         max_sessions = app.max_sessions,
         rooms = app.sessions.rooms().len(),
         ticks_skipped = app.total_ticks_skipped.load(Ordering::Relaxed),
-        allow_list = if app.allowed_region_ips.is_empty() { "no" } else { "yes" },
-        turn = if app.ice_servers.is_empty() { "no" } else { "yes" },
+        allow_list = if app.allowed_region_ips.read().is_empty() { "no" } else { "yes" },
+        turn = if app.ice_servers.read().is_empty() { "no" } else { "yes" },
+        sessions_table = sessions_table_html(app),
+        log_tail = log_tail_html(),
     );
     Response::builder()
         .status(StatusCode::OK)
@@ -673,9 +832,69 @@ button {{ padding: 0.5em 1.2em; font-size: 1em; cursor: pointer; }}
         .unwrap()
 }
 
+// ─────────────────────────── Log ring buffer ───────────────────────────
+//
+// Captures WARN/ERROR lines in memory so the admin page can show recent trouble
+// without opening a log file over RDP. Does not replace normal logging — every
+// record still goes to env_logger's own target (stderr, or wherever
+// RUST_LOG/redirection points it) exactly as before; this just also keeps a
+// short-lived copy of the ones worth surfacing.
+
+const LOG_RING_CAP: usize = 100;
+
+static LOG_RING: parking_lot::Mutex<std::collections::VecDeque<String>> =
+    parking_lot::Mutex::new(std::collections::VecDeque::new());
+
+fn push_log_line(line: String) {
+    let mut ring = LOG_RING.lock();
+    if ring.len() >= LOG_RING_CAP {
+        ring.pop_front();
+    }
+    ring.push_back(line);
+}
+
+fn recent_log_lines() -> Vec<String> {
+    LOG_RING.lock().iter().cloned().collect()
+}
+
+/// Wraps env_logger's own Logger so every record still reaches it unchanged, while
+/// WARN/ERROR records are also captured into LOG_RING with a timestamp relative to
+/// process start (so it lines up with the "Uptime" figure shown on the same page).
+struct RingLogger {
+    inner: env_logger::Logger,
+    started_at: std::time::Instant,
+}
+
+impl log::Log for RingLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        self.inner.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.inner.enabled(record.metadata()) && record.level() <= log::Level::Warn {
+            push_log_line(format!(
+                "[{:>8.1}s] {:<5} {}",
+                self.started_at.elapsed().as_secs_f64(),
+                record.level(),
+                record.args()
+            ));
+        }
+        self.inner.log(record);
+    }
+
+    fn flush(&self) {
+        self.inner.flush();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let started_at = std::time::Instant::now();
+    let inner_logger =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
+    log::set_max_level(inner_logger.filter());
+    log::set_boxed_logger(Box::new(RingLogger { inner: inner_logger, started_at }))
+        .expect("logger set exactly once, at the very start of main");
 
     let cfg = match Config::load() {
         Ok(c) => c,
@@ -693,17 +912,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bind_ip: cfg.bind_ip.clone(),
         max_sessions: cfg.max_sessions,
         runtime: Arc::new(webrtc::runtime::TokioRuntime),
-        allowed_region_ips: cfg.allowed_region_ips.clone(),
-        ice_servers: if cfg.turn_urls.is_empty() {
-            Vec::new()
-        } else {
-            vec![rtc::peer_connection::configuration::RTCIceServer {
-                urls: cfg.turn_urls.clone(),
-                username: cfg.turn_username.clone().unwrap_or_default(),
-                credential: cfg.turn_credential.clone().unwrap_or_default(),
-            }]
-        },
-        started_at: std::time::Instant::now(),
+        allowed_region_ips: RwLock::new(cfg.allowed_region_ips.clone()),
+        ice_servers: RwLock::new(build_ice_servers(
+            &cfg.turn_urls,
+            cfg.turn_username.clone(),
+            cfg.turn_credential.clone(),
+        )),
+        started_at,
         total_ticks_skipped: std::sync::atomic::AtomicU64::new(0),
     });
 
@@ -762,9 +977,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         };
-        if !app.allowed_region_ips.is_empty() && !app.allowed_region_ips.contains(&peer.ip()) {
-            log::warn!("rejecting connection from {peer}: not in allowed_region_ips");
-            continue;
+        {
+            let allow = app.allowed_region_ips.read();
+            if !allow.is_empty() && !allow.contains(&peer.ip()) {
+                log::warn!("rejecting connection from {peer}: not in allowed_region_ips");
+                continue;
+            }
         }
 
         let acceptor = acceptor.clone();
