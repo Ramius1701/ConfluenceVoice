@@ -61,9 +61,42 @@ date and viewer version beside it.
 
 ### Operations
 - [ ] Runs unattended for 24 hours with no `mixer overloaded` warnings
-- [ ] `cargo run --release --example load_test` at the expected number of listeners, CPU noted
+- [x] `cargo run --release --example load_test` at the expected number of listeners, CPU noted (2026-09-27, see Capacity below)
 - [ ] Survives a Windows reboot and starts on its own — **on hold**: needs the Windows Service wrapper, which is not being worked on for now
 - [ ] Certificate renewal procedure documented and tried
+
+## Capacity
+
+Measured 2026-09-27 with `cargo run --release --example load_test`, on a 16-logical-core
+Windows machine, against an isolated instance (not the machine's live traffic). Each tier
+started from a freshly restarted, empty instance — running tiers back-to-back without a
+restart left the previous tier's sessions still connected (the harness does not log its
+clients out) and produced misleadingly high numbers, since the next tier's load stacked on
+top of the leftover one.
+
+Windows has no `/proc`, so the harness's own CPU measurement doesn't work here; CPU below
+is the host process's own CPU-time counter, sampled from just before the run to just after,
+so it includes connection setup for all clients, not only the steady-state speaking window
+wolfvoice's own published numbers (12%, 57%, 203% of one core at these same three tiers, on
+a 12-core Linux VM) were measured over — the two are not a fair apples-to-apples comparison.
+
+| Clients | Speaking | CPU used | Result |
+|---|---|---|---|
+| 10 | 5 | 31% of one core | clean, no overload |
+| 40 | 20 | 86% of one core | clean, no overload |
+| 120 | 60 | 211% of one core | **103 of 500 ticks skipped in one 10s window** — real audio breakup |
+
+All connections succeeded at every tier, including 120/60 — the failure is missed mixer
+deadlines under load, not connection capacity.
+
+**The tick-overload finding, unexplained:** at 120 sessions the mixer missed its 20ms
+deadline while using only ~13% of this machine's total CPU (2.1 of 16 cores). That is not a
+raw CPU shortage — something about meeting the real-time deadline was the problem, not
+raw throughput. The buffer-reuse fix in `room.rs` (avoiding a fresh allocation per
+listener per tick) was written specifically because of this finding, on the theory that
+allocator contention under load was a likely cause, but **this table predates that fix and
+has not been re-measured since** — the numbers above are the pre-fix baseline, not
+confirmation the fix helped. Re-running this same table is the natural next step.
 
 ## Problems found, and what fixed them
 
