@@ -260,6 +260,7 @@ impl PeerConnectionEventHandler for Handler {
         log::info!("session {} data channel {:?}", self.session.id, label);
 
         *self.dc.lock() = Some(data_channel.clone());
+        self.session.dc_open.store(true, Ordering::Relaxed);
 
         let session = self.session.clone();
         let slot = self.dc.clone();
@@ -285,6 +286,7 @@ impl PeerConnectionEventHandler for Handler {
                 }
             }
             *slot.lock() = None;
+            session.dc_open.store(false, Ordering::Relaxed);
             log::info!("data channel closed for session {}", session.id);
         }));
     }

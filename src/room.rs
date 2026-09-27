@@ -81,6 +81,9 @@ pub struct Session {
     pub joined: AtomicBool,
     pub primary: AtomicBool,
     pub closed: AtomicBool,
+    /// True while this viewer's SLData data channel is open. Roster updates can only be
+    /// delivered then, so nothing may be marked as announced to this listener before it.
+    pub dc_open: AtomicBool,
 
     /// Agents we have already announced to this listener, so a join is sent once.
     announced: Mutex<HashSet<String>>,
@@ -101,6 +104,7 @@ impl Session {
             joined: AtomicBool::new(false),
             primary: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            dc_open: AtomicBool::new(false),
             announced: Mutex::new(HashSet::new()),
         }
     }
@@ -337,7 +341,14 @@ pub fn mix_room(members: &[Arc<Session>]) -> Vec<ListenerOutput> {
         out.push(ListenerOutput {
             session: listener.clone(),
             stereo,
-            roster: build_roster(listener, &frames),
+            // Build (and so record as announced) only when it can actually be delivered:
+            // otherwise a listener whose channel opens a moment after it joins never
+            // learns about the people already in the room.
+            roster: if listener.dc_open.load(Ordering::Relaxed) {
+                build_roster(listener, &frames)
+            } else {
+                None
+            },
         });
     }
 
@@ -414,7 +425,28 @@ mod tests {
         // A fully joined viewer: announced its join with "p":true.
         s.joined.store(true, Ordering::Relaxed);
         s.primary.store(true, Ordering::Relaxed);
+        s.dc_open.store(true, Ordering::Relaxed);
         s
+    }
+
+    #[test]
+    fn nobody_is_announced_to_a_listener_whose_channel_is_not_open_yet() {
+        // b joined 40 s after a. While b's data channel is still opening, a roster built
+        // for b would be dropped — it must not count as announced.
+        let a = session("a", "agent-a", [0.0, 0.0, 0.0]);
+        let b = session("b", "agent-b", [1.0, 0.0, 0.0]);
+        b.dc_open.store(false, Ordering::Relaxed);
+        loud(&a);
+        let out = mix_room(&[a.clone(), b.clone()]);
+        let for_b = out.iter().find(|o| o.session.id == "b").unwrap();
+        assert!(for_b.roster.is_none(), "no roster while b's channel is closed");
+
+        // b's channel opens: a must now be announced to b.
+        b.dc_open.store(true, Ordering::Relaxed);
+        loud(&a);
+        let out = mix_room(&[a.clone(), b.clone()]);
+        let r = out.iter().find(|o| o.session.id == "b").unwrap().roster.clone().unwrap();
+        assert!(r.contains("agent-a") && r.contains(r#""j""#), "a announced to b once open: {r}");
     }
 
     #[test]
