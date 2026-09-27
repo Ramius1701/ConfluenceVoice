@@ -194,11 +194,15 @@ impl PeerConnectionEventHandler for Handler {
             self.session.agent_id,
             state
         );
+        // Disconnected is deliberately NOT terminal. In WebRTC it only means the peer has
+        // stopped answering connectivity checks for a few seconds, and the connection
+        // often recovers on its own — normal for a viewer across the internet. If it
+        // does not recover the library moves on to Failed after its own timeout, which
+        // does end the session. Treating Disconnected as final tore down remote
+        // viewers' sessions within seconds, forcing them to re-provision over and over.
         if matches!(
             state,
-            RTCPeerConnectionState::Failed
-                | RTCPeerConnectionState::Closed
-                | RTCPeerConnectionState::Disconnected
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
         ) {
             self.session.closed.store(true, Ordering::Relaxed);
         }
