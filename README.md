@@ -185,23 +185,33 @@ Next, in order:
    each other, panning, distance, other people's speaking dots), then group voice and
    person-to-person calls. Progress is tracked in the checklist in
    [docs/TESTING.md](docs/TESTING.md); a release should only claim what is ticked there.
-2. **Authentication on the voice port.** TCP 9443 currently has no authentication of its
-   own and relies on a firewall. Planned: a shared secret between the region and
-   ConfluenceVoice, and an allow-list of region IP addresses in `confluencevoice.toml`.
-3. **TURN relay support.** Viewers on networks that block outbound UDP get no voice
-   today. Vivox handled that case, so a replacement should too.
+2. **A shared secret for the voice port.** TCP 9443 now supports an IP allow-list
+   (`allowed_region_ips` in `confluencevoice.toml`, checked before the TLS handshake) —
+   done. A shared-secret scheme on top of that is not: the region-side connector
+   (`os-webrtc-janus`'s `WebRtcVoiceServiceConnector.cs`) has no way to send one today, so
+   this needs a matching region-side change first, not just a ConfluenceVoice one.
+3. ~~TURN relay support~~ **Done.** `turn_urls`/`turn_username`/`turn_credential` in
+   `confluencevoice.toml` are passed to viewers as a relay of last resort. Verified that a
+   configured TURN server doesn't break normal connections; **not yet verified against a
+   real TURN server actually relaying media** for a viewer that needs one.
 
 After that:
 
 4. **Easier setup for operators.** Get the `stun-servers` fix into upstream
    `os-webrtc-janus` (Firestorm 7.2.4+ needs it), a Windows guide to getting a free
-   TLS certificate, a firewall setup script, automatic public-IP detection, and a
-   Vivox-to-WebRTC migration guide for grids that mix both.
-5. **Reliability.** Log to a file with rotation, a status page (sessions, CPU, skipped
-   mixer ticks), certificate reload without a restart, clearer config validation, and a
-   documented Task Scheduler or NSSM recipe for starting on boot.
-6. **Distribution and trust.** Automated Windows builds on GitHub, code signing so
-   SmartScreen does not warn, and a winget or Scoop package.
+   TLS certificate, a firewall setup script (PowerShell commands exist in this README;
+   not yet a standalone script), automatic public-IP detection, and a Vivox-to-WebRTC
+   migration guide for grids that mix both.
+5. **Reliability.** Done: a status endpoint (`GET /`) reporting version, uptime, session
+   counts, cumulative skipped-tick count, and whether auth/TURN are configured; and config
+   validation that rejects bad IP entries and incomplete TURN setup at startup with a
+   clear message. Still open: log to a file with rotation, certificate reload without a
+   restart, and a documented Task Scheduler or NSSM recipe for starting on boot.
+6. **Distribution and trust.** Done: automated Windows builds and tests on every push
+   ([ci.yml](.github/workflows/ci.yml)), and a release workflow
+   ([release.yml](.github/workflows/release.yml)) that builds, packages and publishes a
+   GitHub Release from a version tag. Still open: code signing so SmartScreen does not
+   warn (needs a certificate), and a winget or Scoop package.
 7. **Moderator mute.** Estate and group moderators muting another person, a feature
    Vivox had. The protocol field exists; the server currently always reports it as
    `false`.
@@ -259,13 +269,14 @@ region's Vivox and WebRTC modules answer requests together) has been tried on on
 Vivox or ThinkVox regions, does not hit this. Details in
 [docs/TESTING.md](docs/TESTING.md).
 
-Same as upstream:
-
-- **No TURN, and no way to add one.** Firestorm hardcodes its STUN servers to
-  `stun:stunN.<grid>.secondlife.io`, which do not resolve outside Second Life.
-  Media still connects in the common case, because the server advertises a
-  routable host candidate and learns the viewer's address from the connectivity
-  check — but a user whose network blocks outbound UDP cannot use voice at all.
+- **TURN is supported but unverified against a real relay.** `confluencevoice.toml` can
+  point viewers at a TURN server (see Roadmap above) — unlike upstream wolfvoice, which
+  has no way to add one. Without one configured, the situation is the same as upstream:
+  Firestorm hardcodes its own STUN servers to `stun:stunN.<grid>.secondlife.io`, which
+  don't resolve outside Second Life, so media still connects in the common case (the
+  server advertises a routable host candidate and learns the viewer's address from the
+  connectivity check), but a viewer whose network blocks outbound UDP entirely gets no
+  voice.
 - **Single instance.** If ConfluenceVoice is down, voice is down everywhere it is
   configured.
 - **Group and IM voice** (`channel_type: multiagent`) is implemented and rooms are
