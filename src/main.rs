@@ -50,6 +50,16 @@ const DISCONNECT_GRACE: Duration = Duration::from_secs(60);
 /// plus a trickled ICE candidate list; a few hundred KiB is ample.
 const MAX_RPC_BODY: usize = 256 * 1024;
 
+/// How often the admin page reloads itself. A meta-refresh rather than JS polling —
+/// consistent with the rest of the page being hand-rolled HTML with no client script.
+const ADMIN_REFRESH_SECS: u64 = 5;
+
+/// How long after startup the admin page keeps showing the "not started via Restart"
+/// banner (see admin_status_page). Past this, a low-uptime process that wasn't
+/// launched by the Restart button has presumably already been noticed and dealt
+/// with, so a permanently-lit warning would just be noise.
+const UNEXPLAINED_UPTIME_GRACE: Duration = Duration::from_secs(300);
+
 struct App {
     sessions: room::Registry,
     endpoints: RwLock<HashMap<String, Arc<Endpoint>>>,
@@ -71,7 +81,20 @@ struct App {
     /// 10s log warning tracks a separate, resetting count for its own rate-limiting —
     /// this one only ever grows, so the status endpoint can show a real lifetime total.
     total_ticks_skipped: std::sync::atomic::AtomicU64,
+    /// True when this process was launched by the admin page's own /restart (which
+    /// sets RESTART_MARKER_ENV on the child it spawns — see admin_handle), false for
+    /// every other way this process could have started: a first-ever cold start, a
+    /// double-click, Task Scheduler, or a relaunch after a crash. There is no
+    /// auto-relaunch-on-crash today, so in practice false almost always means "someone
+    /// started this by hand" — but the one case worth flagging is the operator seeing
+    /// a low uptime they did NOT cause via the Restart button, which is a real signal
+    /// something died on its own.
+    started_via_admin_restart: bool,
 }
+
+/// Env var the admin page's /restart sets on the child it spawns, so the new process
+/// can tell it was started that way — see App.started_via_admin_restart above.
+const RESTART_MARKER_ENV: &str = "CONFLUENCEVOICE_ADMIN_RESTART";
 
 impl App {
     fn endpoint(&self, id: &str) -> Option<Arc<Endpoint>> {
@@ -598,7 +621,7 @@ async fn admin_handle(app: Arc<App>, req: Request<Body>) -> Result<Response<Body
         (&Method::POST, "/restart") => {
             log::warn!("admin: restart requested");
             match std::env::current_exe() {
-                Ok(exe) => match std::process::Command::new(&exe).spawn() {
+                Ok(exe) => match std::process::Command::new(&exe).env(RESTART_MARKER_ENV, "1").spawn() {
                     Ok(child) => log::info!("admin: spawned new instance, pid {}", child.id()),
                     Err(e) => log::error!("admin: failed to spawn new instance: {e}; not exiting"),
                 },
@@ -709,37 +732,49 @@ fn short_id(id: &str) -> &str {
     id.strip_prefix("cv-").and_then(|s| s.get(..8)).unwrap_or(id)
 }
 
-/// Renders the live session list for the admin page, one row per participant with
-/// a Kick button that calls /kick — see admin_handle. Not gated on anything the
-/// mixer needs; room::Registry::all exists purely for this.
+/// Renders the live session list for the admin page, grouped by room (one table per
+/// room) with a Kick button per participant that calls /kick — see admin_handle.
+/// Grouped rather than flat because as of the 2026-09-27 grid migration every region
+/// routes through this one server, so which ROOM has traffic is now the interesting
+/// question, not just how many sessions exist in total.
 fn sessions_table_html(app: &App) -> String {
-    let mut sessions = app.sessions.all();
-    sessions.sort_by_key(|s| s.created_at);
-    if sessions.is_empty() {
+    let mut rooms = app.sessions.rooms();
+    if rooms.is_empty() {
         return "<p>No active sessions.</p>".to_string();
     }
-    let mut html = String::from(
-        "<table><tr><th>Agent</th><th>Session</th><th>Room</th><th>Type</th>\
-         <th>Joined</th><th>Channel</th><th>Connected</th><th></th></tr>",
-    );
-    for s in &sessions {
+    // Stable order between refreshes (auto-refresh reloads this every few seconds;
+    // rooms jumping around on every reload would make the page hard to read).
+    rooms.sort_by_key(|r| r.to_string());
+
+    let mut html = String::new();
+    for room in &rooms {
+        let mut members = app.sessions.members(room);
+        members.sort_by_key(|s| s.created_at);
+
         html.push_str(&format!(
-            "<tr><td>{agent}</td><td><code>{sid}</code></td><td>{room}</td><td>{kind}</td>\
-             <td>{joined}</td><td>{dc}</td><td>{secs} s</td><td>\
-             <form method=\"post\" action=\"/kick?id={id}\" \
-             onsubmit=\"return confirm('Disconnect {agent}? They will need to reconnect.');\">\
-             <button type=\"submit\" class=\"danger\">Kick</button></form></td></tr>",
-            agent = html_escape(&s.agent_id),
-            sid = short_id(&s.id),
-            room = html_escape(&s.room.to_string()),
-            kind = if s.spatial { "spatial" } else { "multiagent" },
-            joined = if s.joined.load(Ordering::Relaxed) { "yes" } else { "no" },
-            dc = if s.dc_open.load(Ordering::Relaxed) { "yes" } else { "no" },
-            secs = s.created_at.elapsed().as_secs(),
-            id = s.id,
+            "<h3>{room} ({n})</h3><table><tr><th>Agent</th><th>Session</th><th>Type</th>\
+             <th>Joined</th><th>Channel</th><th>Connected</th><th></th></tr>",
+            room = html_escape(&room.to_string()),
+            n = members.len(),
         ));
+        for s in &members {
+            html.push_str(&format!(
+                "<tr><td>{agent}</td><td><code>{sid}</code></td><td>{kind}</td>\
+                 <td>{joined}</td><td>{dc}</td><td>{secs} s</td><td>\
+                 <form method=\"post\" action=\"/kick?id={id}\" \
+                 onsubmit=\"return confirm('Disconnect {agent}? They will need to reconnect.');\">\
+                 <button type=\"submit\" class=\"danger\">Kick</button></form></td></tr>",
+                agent = html_escape(&s.agent_id),
+                sid = short_id(&s.id),
+                kind = if s.spatial { "spatial" } else { "multiagent" },
+                joined = if s.joined.load(Ordering::Relaxed) { "yes" } else { "no" },
+                dc = if s.dc_open.load(Ordering::Relaxed) { "yes" } else { "no" },
+                secs = s.created_at.elapsed().as_secs(),
+                id = s.id,
+            ));
+        }
+        html.push_str("</table>");
     }
-    html.push_str("</table>");
     html
 }
 
@@ -776,20 +811,26 @@ fn admin_status_page(app: &App) -> Response<Body> {
     let html = format!(
         r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>ConfluenceVoice admin</title>
+<meta http-equiv="refresh" content="{refresh_secs}">
 <style>
 body {{ font-family: system-ui, sans-serif; max-width: 40em; margin: 2em auto; padding: 0 1em; }}
-table {{ border-collapse: collapse; width: 100%; margin-bottom: 1.5em; }}
+table {{ border-collapse: collapse; width: 100%; margin-bottom: 1em; }}
 th, td {{ text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid #ccc; }}
 form {{ display: inline-block; margin-right: 0.6em; }}
 button {{ padding: 0.5em 1.2em; font-size: 1em; cursor: pointer; }}
 .danger {{ background: #c0392b; color: white; border: 1px solid #a03024; }}
+.warn {{ background: #fff3cd; border: 1px solid #ffe69c; padding: 0.6em; border-radius: 4px; }}
 h2 {{ font-size: 1.1em; margin-top: 1.5em; }}
+h3 {{ font-size: 0.95em; margin: 1em 0 0.3em; color: #555; }}
 </style></head>
 <body>
 <h1>ConfluenceVoice</h1>
+<p style="color:#888; font-size:0.85em;">Auto-refreshes every {refresh_secs}s.</p>
+{restart_notice}
 <table>
 <tr><th>Version</th><td>{version}</td></tr>
 <tr><th>Uptime</th><td>{uptime_secs} s</td></tr>
+<tr><th>Started via</th><td>{started_via}</td></tr>
 <tr><th>Sessions</th><td>{sessions} / {max_sessions}</td></tr>
 <tr><th>Rooms</th><td>{rooms}</td></tr>
 <tr><th>Mixer ticks skipped (lifetime)</th><td>{ticks_skipped}</td></tr>
@@ -797,7 +838,7 @@ h2 {{ font-size: 1.1em; margin-top: 1.5em; }}
 <tr><th>TURN configured</th><td>{turn}</td></tr>
 </table>
 
-<h2>Sessions</h2>
+<h2>Sessions by room</h2>
 {sessions_table}
 
 <h2>Recent warnings / errors</h2>
@@ -814,8 +855,17 @@ h2 {{ font-size: 1.1em; margin-top: 1.5em; }}
 <button type="submit" class="danger">Stop</button>
 </form>
 </body></html>"#,
+        refresh_secs = ADMIN_REFRESH_SECS,
+        restart_notice = if app.started_via_admin_restart || app.started_at.elapsed() > UNEXPLAINED_UPTIME_GRACE {
+            String::new()
+        } else {
+            "<p class=\"warn\">&#9888; Low uptime, and this process was NOT started via this \
+             page's Restart button. If you did not just launch it by hand, something else \
+             (a crash, a manual relaunch) brought it back up.</p>".to_string()
+        },
         version = env!("CARGO_PKG_VERSION"),
         uptime_secs = app.started_at.elapsed().as_secs(),
+        started_via = if app.started_via_admin_restart { "this admin page's Restart" } else { "not this page (direct launch, or a crash relaunch)" },
         sessions = app.sessions.session_count(),
         max_sessions = app.max_sessions,
         rooms = app.sessions.rooms().len(),
@@ -920,6 +970,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )),
         started_at,
         total_ticks_skipped: std::sync::atomic::AtomicU64::new(0),
+        started_via_admin_restart: std::env::var(RESTART_MARKER_ENV).is_ok(),
     });
 
     if cfg.allowed_region_ips.is_empty() {

@@ -293,13 +293,6 @@ impl Registry {
     pub fn session_count(&self) -> usize {
         self.by_session.read().len()
     }
-
-    /// Every live session, in no particular order. Used by the admin page's session
-    /// list (main.rs's sessions_table_html) — nothing on the mixer path needs this,
-    /// which iterates room-by-room via `members` instead.
-    pub fn all(&self) -> Vec<Arc<Session>> {
-        self.by_session.read().values().cloned().collect()
-    }
 }
 
 /// Escalate any session that has been reported Disconnected (not Failed/Closed) for at
