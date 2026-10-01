@@ -32,9 +32,12 @@ the voice path, at the cost of running and maintaining it yourself.
 
 **Best on a grid where every region speaks WebRTC.** That's the configuration this
 project tests against, and where the checklist in [docs/TESTING.md](docs/TESTING.md) is
-being filled in. A grid that mixes WebRTC with Vivox or ThinkVox regions works too, but
-hits a real Firestorm quirk — see "Known limitations" below — that a single-voice-system
-grid never encounters.
+being filled in. The Casperia grid ConfluenceVoice was developed on migrated all 15 of
+its regions off Vivox to WebRTC-only in a single pass (2026-09-27), replacing it
+entirely rather than running both side by side — each region's config kept a
+`.pre-confluencevoice.bak` rollback copy from that migration. A grid that mixes WebRTC
+with Vivox or ThinkVox regions works too, but hits a real Firestorm quirk — see "Known
+limitations" below — that a single-voice-system grid never encounters.
 
 ConfluenceVoice is an independent project, derived from
 [wolfvoice](https://github.com/intelligentwolf/wolfvoice) by Wolf Software Systems
@@ -172,10 +175,14 @@ your `confluencevoice.toml` and `tls\` folder, wherever you want to run it from.
 
 ## Status
 
-Working end to end with one live viewer (Firestorm 7.2.5) through an OpenSim region:
-the peer connection connects, the data channel opens, and the speaking indicator
-shows. **Not yet tested with two or more real participants** (hearing each other,
-spatial panning). Details, problems found and fixes: [docs/TESTING.md](docs/TESTING.md).
+Working end to end with real viewers (Firestorm 7.2.5) through OpenSim regions: the
+peer connection connects, the data channel opens, and the speaking indicator shows —
+including **confirmed between two real, separately-located participants** (2026-09-28,
+New Zealand and Indiana, USA) with both speaking dots appearing. **Not yet confirmed:
+actually hearing each other, spatial panning, distance falloff, and per-person
+mute/volume** with two real people — the dots being correct is necessary but not
+sufficient for those. Details, problems found and fixes:
+[docs/TESTING.md](docs/TESTING.md).
 
 ## Roadmap
 
@@ -200,17 +207,21 @@ After that:
 4. **Easier setup for operators.** Get the `stun-servers` fix into upstream
    `os-webrtc-janus` (Firestorm 7.2.4+ needs it), a Windows guide to getting a free
    TLS certificate, a firewall setup script (PowerShell commands exist in this README;
-   not yet a standalone script), automatic public-IP detection, and a Vivox-to-WebRTC
-   migration guide for grids that mix both.
+   not yet a standalone script), automatic public-IP detection. A dedicated
+   Vivox-to-WebRTC migration guide is still unwritten, but real experience from
+   migrating Casperia's 15 regions in one pass is documented in
+   [docs/TESTING.md](docs/TESTING.md), including what broke and how it was diagnosed.
 5. **Reliability.** Done: a status endpoint (`GET /`) reporting version, uptime, session
    counts, cumulative skipped-tick count, and whether auth/TURN are configured; config
    validation that rejects bad IP entries and incomplete TURN setup at startup with a
-   clear message; and a local admin page (`admin_bind` in `confluencevoice.toml`,
-   loopback-only by default) with a live status view and Stop/Restart controls. Still
-   open: a TLS certificate expiry warning on the status/admin page (so a lapsed cert
-   doesn't silently take voice down), log to a file with rotation, certificate reload
-   without a restart, and a documented Task Scheduler or NSSM recipe for starting on
-   boot.
+   clear message; and a local admin dashboard (`admin_bind` in `confluencevoice.toml`,
+   loopback-only by default, auto-refreshing) with live status, sessions grouped by room
+   with a per-session Kick button, a recent warnings/errors log panel, an
+   unexpected-restart flag (uptime reset without the admin page's own Restart button
+   having caused it), and Stop/Restart/Reload-config controls. Still open: a TLS
+   certificate expiry warning on the dashboard (so a lapsed cert doesn't silently take
+   voice down), log to a file with rotation, certificate reload without a restart, and a
+   documented Task Scheduler or NSSM recipe for starting on boot.
 6. **Distribution and trust.** Done: automated Windows builds and tests on every push
    ([ci.yml](.github/workflows/ci.yml)), and a release workflow
    ([release.yml](.github/workflows/release.yml)) that builds, packages and publishes a
@@ -271,13 +282,36 @@ service).
 **Mixed grids.** On a grid that runs WebRTC regions next to Vivox or ThinkVox regions,
 Firestorm's Vivox client can stop for the rest of the session after visiting a WebRTC
 region, so voice fails in the Vivox regions until voice is toggled off and on in
-Preferences → Sound & Media → Voice (no relog needed). This is a Firestorm behaviour,
-not something ConfluenceVoice can fix on its own — a region-side workaround (letting the
-region's Vivox and WebRTC modules answer requests together) has been tried on one grid's
-`os-webrtc-janus` build, not upstreamed here yet. A grid running WebRTC only, with no
-Vivox or ThinkVox regions, does not hit this. Details in
-[docs/TESTING.md](docs/TESTING.md).
+Preferences → Sound & Media → Voice (no relog needed) — or, if the thing that actually
+failed was a real attempt to reach Vivox's own servers rather than a rejection, not even
+that works and a full relog is needed instead (confirmed live, 2026-09-27). This is a
+Firestorm behaviour, not something ConfluenceVoice can fix on its own. A region-side fix
+exists — the WebRTC module hands Vivox-type requests to the Vivox module instead of
+rejecting them, so the viewer's Vivox client gets real credentials and never gives up —
+committed to [OpenSim-Confluence](https://github.com/Ramius1701/OpenSim-Confluence)
+(not upstream `os-webrtc-janus` itself yet). The real fix, though, is not running a mixed
+grid at all: a grid running WebRTC only, like Casperia now does on all 15 regions, never
+hits this. Details in [docs/TESTING.md](docs/TESTING.md).
 
+- **Voice does not reliably survive rapid region-border crossings.** Standing near a
+  corner where several regions meet can put a viewer's voice into a loop — a real,
+  automatic border handoff (`process_crossed_region`) tears down the peer connection and
+  rebuilds a complete new one from scratch (fresh SDP, ICE, DTLS) every 5-15 seconds, so
+  it connects successfully but gets torn down again before anything is heard. A single
+  clean crossing works; the corner case has not been fixed. Whether this is worse than
+  Vivox's own reconnection (likely a cheap SIP channel-switch, vs. WebRTC's full rebuild
+  every time) is an open, unverified question — Vivox is no longer running anywhere on
+  the reference grid to compare against. Details in [docs/TESTING.md](docs/TESTING.md).
+- **A failed provision request is not retried by the viewer.** Firestorm makes one
+  attempt at `ProvisionVoiceAccountRequest` and does not retry on its own if that single
+  attempt hits a transient failure (confirmed live: a momentary connection refusal
+  against an otherwise healthy, half-hour-stable ConfluenceVoice instance was enough to
+  permanently fail one viewer's voice while a second viewer connected normally seconds
+  later). The region-side connector now retries a failed round trip up to 3 times with a
+  short backoff before giving up, masking most transient hiccups from the viewer
+  entirely — but this is a region-side (`os-webrtc-janus`) fix, not something
+  ConfluenceVoice itself can do, and it does not help if ConfluenceVoice is down for
+  longer than that.
 - **TURN is supported but unverified against a real relay.** `confluencevoice.toml` can
   point viewers at a TURN server (see Roadmap above) — unlike upstream wolfvoice, which
   has no way to add one. Without one configured, the situation is the same as upstream:
